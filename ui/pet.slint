@@ -1,0 +1,56 @@
+import { Size } from "theme.slint";
+
+export enum Mood { idle, music, sleep, focus, happy, yawn }
+
+// Sprite kucing 32x32 dari strip PNG horizontal.
+// Jumlah frame dan fps mengikuti strip di assets/pet.
+export component Pet {
+    in property <Mood> mood;
+    // Naik setiap kali animasi harus diputar dari frame pertama.
+    in property <int> generation;
+    // Animasi sekali-jalan (happy) selesai.
+    callback finished();
+
+    width: Size.pet;
+    height: Size.pet;
+
+    property <int> frame;
+    property <bool> done;
+    property <int> frames: mood == Mood.happy || mood == Mood.focus || mood == Mood.yawn ? 6 : 8;
+    property <int> fps: mood == Mood.happy ? 10 : mood == Mood.music ? 8 : mood == Mood.idle || mood == Mood.yawn ? 6 : 4;
+    property <bool> loops: mood != Mood.happy;
+
+    changed generation => {
+        frame = 0;
+        done = false;
+    }
+
+    Timer {
+        interval: 1000ms / root.fps;
+        running: !root.done;
+        triggered => {
+            if (root.frame + 1 < root.frames) {
+                root.frame += 1;
+            } else if (root.loops) {
+                root.frame = 0;
+            } else {
+                root.done = true;
+                root.finished();
+            }
+        }
+    }
+
+    Image {
+        width: 100%;
+        height: 100%;
+        image-rendering: pixelated;
+        source-clip-x: root.frame * 32;
+        source-clip-width: 32;
+        source: root.mood == Mood.music ? @image-url("../assets/pet/cat_music.png")
+            : root.mood == Mood.sleep ? @image-url("../assets/pet/cat_sleep.png")
+            : root.mood == Mood.focus ? @image-url("../assets/pet/cat_focus.png")
+            : root.mood == Mood.happy ? @image-url("../assets/pet/cat_happy.png")
+            : root.mood == Mood.yawn ? @image-url("../assets/pet/cat_yawn.png")
+            : @image-url("../assets/pet/cat_idle.png");
+    }
+}

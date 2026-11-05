@@ -1,7 +1,2 @@
-bin/
-obj/
-.vs/
-*.user
-TestResults/
-publish/
-release/
+/target
+/release

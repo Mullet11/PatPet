@@ -1,0 +1,80 @@
+import { Palette, Type, Space, Radius, Size, Motion } from "theme.slint";
+import { Pet, Mood } from "pet.slint";
+
+export { Mood }
+
+// Jendela berukuran tetap seluas bar saat melebar. Piksel transparan
+// tidak menangkap klik, jadi area di luar bar tembus ke desktop.
+export component AppWindow inherits Window {
+    in property <string> time;
+    in property <string> date;
+    in property <Mood> mood;
+    in property <int> generation;
+    callback pet-clicked();
+    callback pet-finished();
+    callback quit();
+
+    no-frame: true;
+    background: transparent;
+    width: Size.bar-width-wide;
+    height: Size.bar-height;
+    default-font-family: Type.family;
+    default-font-size: Type.body;
+
+    property <bool> wide: touch.has-hover;
+
+    Rectangle {
+        x: (root.width - self.width) / 2;
+        y: 0;
+        width: root.wide ? Size.bar-width-wide : Size.bar-width;
+        height: Size.bar-height;
+        animate width { duration: Motion.move; easing: Motion.ease; }
+        background: Palette.ink;
+        border-bottom-left-radius: Radius.bar;
+        border-bottom-right-radius: Radius.bar;
+        clip: true;
+
+        touch := TouchArea {
+            clicked => { root.pet-clicked(); }
+            // Sementara sampai ikon tray ada di fase 1.
+            pointer-event(e) => {
+                if (e.kind == PointerEventKind.up && e.button == PointerEventButton.right) {
+                    root.quit();
+                }
+            }
+        }
+
+        HorizontalLayout {
+            padding-left: Space.sm;
+            padding-right: Space.md;
+            spacing: Space.sm;
+
+            Pet {
+                y: (parent.height - self.height) / 2;
+                mood: root.mood;
+                generation: root.generation;
+                finished => { root.pet-finished(); }
+            }
+
+            Text {
+                text: root.time;
+                font-family: Type.display;
+                font-size: Type.title;
+                font-weight: Type.semibold;
+                color: Palette.text;
+                vertical-alignment: center;
+            }
+
+            Text {
+                text: root.date;
+                color: Palette.muted;
+                horizontal-stretch: 1;
+                horizontal-alignment: right;
+                vertical-alignment: center;
+                overflow: elide;
+                opacity: root.wide ? 1 : 0;
+                animate opacity { duration: Motion.move; easing: Motion.ease; }
+            }
+        }
+    }
+}

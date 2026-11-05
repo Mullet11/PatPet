@@ -1,86 +1,61 @@
 # PatPet 🐾
 
-Widget desktop Windows dengan kucing pixel art. Dua mode tampilan (pilih di tab **Atur**):
+Widget desktop Windows dengan kucing pixel art yang menempel di tengah atas layar seperti notch.
 
-| Mode | Saat tertutup | Saat diklik |
+> **Sedang ditulis ulang ke Rust.** Versi C#/WPF terakhir (1.4.0) disimpan di tag `v1.4-csharp`.
+
+## Status
+
+| Fase | Isi | Status |
 |---|---|---|
-| **Bar atas** (default) | Bar hitam kecil, tetap di tengah atas layar: kucing, jam, sisa timer, ikon musik, baterai (+ animasi saat charger dicolok/dicabut), suhu laptop. Hover → bar melebar menampilkan cuaca + lagu sedang/terakhir diputar | Bar melebar dan tray hitam panjang menyambung di bawahnya |
-| **Ikon bebas** | Hanya kucing, bisa diseret ke mana saja | Tray hitam muncul di dekat kucing (di bawah atau di atas, selalu di dalam layar) |
+| 0 | Bar atas, kucing, jam, tanggal saat hover | Selesai |
+| 1 | Ikon tray, tab Waktu, cuaca, baterai, suhu | Belum |
+| 2 | Musik (Spotify) dan lirik tersinkron | Belum |
+| 3 | Timer dan alarm | Belum |
+| 4 | Catatan dan notifikasi jatuh tempo | Belum |
+| 5 | Pengaturan, mode ikon bebas, sembunyi saat layar penuh | Belum |
 
-Di kedua mode kucing ikut berubah: tidur setelah idle 5 menit, pakai headphone saat musik diputar, membaca saat timer berjalan.
+Untuk sementara, klik kanan bar untuk menutup aplikasi.
 
-Tab di dalam tray (perpindahan tab dianimasikan geser + fade, mengikuti refresh rate monitor):
+## Target
 
-| Tab | Isi |
-|---|---|
-| **Waktu** | Jam tanpa detik + WIB/WITA/WIT, tanggal, nama daerah, cuaca, kucing ekspresif |
-| **Musik** | Pemutar di kiri, **lirik tersinkron** (LRCLIB) di kanan, garis waktu yang bisa diseret di bawah |
-| **Timer** | Satu timer dengan durasi bebas (jam:menit:detik , ketik, panah, atau gulir mouse), ubah sisa waktu saat berjalan, **alarm** saat habis (bisa dimatikan/dicoba) |
-| **Catatan** | Catatan dengan deadline, selesai, pin, cari, undo, notifikasi jatuh tempo |
-| **Atur** | Mode tampilan, lokasi, ukuran ikon, idle, always-on-top, sembunyi saat layar penuh |
+- File `.exe` di bawah 10 MB, tanpa runtime tambahan
+- RAM (private working set) di bawah 50 MB
+- Tidak memakai CPU saat diam
 
+Hasil fase 0: exe 6,4 MB, RAM 1,2 MB, CPU rata-rata 0,007% saat diam.
 
-## Kebutuhan
+## Kebutuhan build
 
 - Windows 10 1903+ / Windows 11
-- [.NET 8 SDK](https://dotnet.microsoft.com/download/dotnet/8.0) untuk build, atau .NET 8 Desktop Runtime untuk menjalankan hasil publish
+- [Rust](https://rustup.rs) dengan toolchain MSVC
+- Visual Studio Build Tools (C++)
 
-## Menjalankan, test, publish
+## Menjalankan, test, build
 
 ```bash
-dotnet run --project PatPet.App
+cargo run
 ```
 
 ```bash
-dotnet test
+cargo test
 ```
 
 ```bash
-dotnet publish PatPet.App -c Release -r win-x64 --self-contained false -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -p:DebugType=none -o publish/small
+cargo build --release
 ```
 
-## Cara pakai
+Hasilnya ada di `target/release/patpet.exe`.
 
-| Aksi | Hasil |
+## Struktur
+
+| Lokasi | Isi |
 |---|---|
-| Klik bar / kucing | Buka / tutup tray |
-| Seret kucing (mode ikon) | Pindah ke mana saja (tersimpan) |
-| Alt+Tab, klik aplikasi lain, Esc, atau klik bar/kucing lagi | Tutup tray (bisa dimatikan di **Atur**) |
-| Arahkan mouse ke kucing (mode ikon) | Tooltip jam, tanggal, cuaca |
-| Arahkan mouse ke bar (mode bar) | Bar melebar: suhu + keadaan cuaca, lagu sedang/terakhir diputar |
-| Alarm berbunyi | Klik bar/kucing atau "Matikan alarm" (berhenti sendiri setelah 60 dtk) |
-| Aplikasi lain layar penuh | PatPet otomatis bersembunyi (bisa dimatikan) |
-| Ikon tray | Klik kiri: buka/tutup tray · klik kanan: sembunyikan, ganti mode, always on top, mulai/jeda timer, keluar |
+| `ui/theme.slint` | Semua warna, ukuran, jarak, dan durasi animasi. Komponen lain wajib mengambil nilai dari sini |
+| `ui/*.slint` | Tampilan |
+| `src/platform.rs` | Jendela Win32 transparan per piksel yang digambar renderer software Slint |
+| `src/pet.rs` | Logika suasana hati kucing |
+| `src/clock.rs` | Waktu lokal dan format tanggal |
+| `assets/pet` | Sprite kucing 32×32 |
 
-## Cuaca & lokasi
-
-- Lokasi diambil dari layanan lokasi Windows (Pengaturan › Privasi › Lokasi › izinkan aplikasi desktop).
-  Jika tidak diizinkan, pilih kota manual di tab **Atur**.
-- Cuaca: [Open-Meteo](https://open-meteo.com) (tanpa API key). Nama daerah: OpenStreetMap Nominatim.
-  Yang dikirim hanya koordinat dibulatkan 4 desimal / nama kota yang dicari. Cuaca diperbarui tiap 30 menit.
-
-## Performa & keamanan
-
-- **Render software** (tanpa perangkat Direct3D GPU): penghematan terbesar, ±60 MB → ±28 MB. Cocok untuk widget
-  kecil dengan animasi 4–8 fps; CPU tetap ±0,1%.
-- Saat tertutup hanya bar/ikon kecil dengan satu timer animasi; animasi baterai hanya ±3 detik saat charger berubah.
-  Tray dibuat saat dibuka dan dibuang saat ditutup (hanya satu halaman yang hidup), lalu GC + trim working set sekali.
-- Lirik hanya diambil saat tab Musik terbuka, di-cache di memori (6 lagu), tidak disimpan ke disk.
-- Bunyi alarm dibuat di memori (±60 KB) hanya saat berbunyi, lalu dibuang.
-- Baterai via `GetSystemPowerStatus`; suhu via performance counter "Thermal Zone Information" (tanpa admin,
-  tanpa driver). Ini sensor ACPI laptop, bukan suhu per-core CPU; di PC tanpa sensor, suhu disembunyikan.
-- Terukur (Release, mode bar), kolom Memori Task Manager: ±5–11 MB saat tertutup, ±32 MB saat baru jalan,
-  ±38 MB saat tray terbuka di halaman Musik; stabil setelah 20 siklus buka/tutup. Memori yang dialokasikan
-  (*private bytes*) ±40–50 MB saat tertutup, ±60 MB saat tray terbuka.
-- Deteksi layar penuh mengabaikan jendela yang sekadar di-maximize (penting saat taskbar auto-hide).
-- PatPet hanya tampil di monitor utama. Ikon tidak bisa diseret ke monitor kedua, dan aplikasi layar penuh di monitor kedua tidak menyembunyikannya.
-- Tray berukuran tetap 400 px, tiap halaman setinggi 240 px.
-- Semua query SQLite berparameter (termasuk escape wildcard pencarian), panjang catatan dibatasi 4000 karakter.
-- HTTP hanya HTTPS, timeout (cuaca 20 dtk + coba ulang 30 dtk–5 mnt, lirik 30 dtk), respons maks 256/512 KB, kedalaman JSON dibatasi;
-  tanpa API key/rahasia. Panjang dan jumlah baris lirik dibatasi.
-- `settings.json` divalidasi saat dibaca (nilai di luar rentang dikoreksi), ditulis atomik; `error.log` dibatasi 512 KB.
-- Cover album maks 2 MB, di-decode ke 128 px, cache 4 gambar.
-
-## Data
-
-Semua di `%AppData%\PatPet`: `settings.json`, `notes.db`, `backups\` (backup harian, 7 terakhir), `error.log`.
+UI dibuat dengan [Slint](https://slint.dev) (lisensi royalty-free, dengan atribusi).
