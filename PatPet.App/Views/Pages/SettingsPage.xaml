@@ -1,0 +1,91 @@
+<UserControl x:Class="PatPet.Views.Pages.SettingsPage"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+    <ScrollViewer VerticalScrollBarVisibility="Auto" Focusable="False">
+        <StackPanel Margin="0,0,4,0">
+            <!-- tampilan -->
+            <TextBlock Text="Tampilan" Style="{StaticResource SectionTitle}" FontSize="13" />
+            <UniformGrid Columns="2" Margin="0,6,0,0">
+                <RadioButton Style="{StaticResource ModeCard}" Tag="&#xE8A0;"
+                             IsChecked="{Binding Mode, Converter={StaticResource EnumEquals}, ConverterParameter=Bar}">
+                    <StackPanel>
+                        <TextBlock Text="Bar atas" FontWeight="SemiBold" />
+                        <TextBlock Text="Tetap di tengah atas layar" FontSize="10" TextWrapping="Wrap"
+                                   Foreground="{StaticResource MutedBrush}" />
+                    </StackPanel>
+                </RadioButton>
+                <RadioButton Style="{StaticResource ModeCard}" Tag="&#xE7EF;" Margin="0"
+                             IsChecked="{Binding Mode, Converter={StaticResource EnumEquals}, ConverterParameter=Icon}">
+                    <StackPanel>
+                        <TextBlock Text="Ikon kucing" FontWeight="SemiBold" />
+                        <TextBlock Text="Bisa diseret ke mana saja" FontSize="10" TextWrapping="Wrap"
+                                   Foreground="{StaticResource MutedBrush}" />
+                    </StackPanel>
+                </RadioButton>
+            </UniformGrid>
+            <Grid Margin="0,8,0,0">
+                <TextBlock Text="Ukuran ikon kucing" Style="{StaticResource Label}" />
+                <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
+                    <Button Style="{StaticResource Chip}" Content="Kecil" Command="{Binding Settings.SetPetScaleCommand}" CommandParameter="1" />
+                    <Button Style="{StaticResource Chip}" Content="Sedang" Command="{Binding Settings.SetPetScaleCommand}" CommandParameter="2" />
+                    <Button Style="{StaticResource Chip}" Content="Besar" Command="{Binding Settings.SetPetScaleCommand}" CommandParameter="3" Margin="0" />
+                </StackPanel>
+            </Grid>
+            <Grid Margin="0,6,0,0">
+                <TextBlock Text="Kucing tidur setelah diam" Style="{StaticResource Label}" />
+                <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
+                    <Button Style="{StaticResource IconButton}" Width="24" Height="24" FontSize="10" Content="&#xE738;"
+                            Command="{Binding Settings.ChangeIdleCommand}" CommandParameter="-1" />
+                    <TextBlock Text="{Binding Settings.IdleSleepMinutes, StringFormat={}{0} menit}" Style="{StaticResource Label}"
+                               Width="56" TextAlignment="Center" />
+                    <Button Style="{StaticResource IconButton}" Width="24" Height="24" FontSize="10" Content="&#xE710;"
+                            Command="{Binding Settings.ChangeIdleCommand}" CommandParameter="1" />
+                </StackPanel>
+            </Grid>
+
+            <Border Height="1" Background="{StaticResource CardBorderBrush}" Margin="0,10" />
+
+            <!-- perilaku -->
+            <TextBlock Text="Perilaku" Style="{StaticResource SectionTitle}" FontSize="13" />
+            <CheckBox Margin="0,6,0,0" Content="Tutup tray saat pindah ke aplikasi lain" IsChecked="{Binding Settings.AutoCollapse}" />
+            <CheckBox Margin="0,6,0,0" Content="Selalu di atas jendela lain" IsChecked="{Binding AlwaysOnTop}" />
+            <CheckBox Margin="0,6,0,0" Content="Sembunyi saat ada aplikasi layar penuh" IsChecked="{Binding HideInFullscreen}" />
+
+            <Border Height="1" Background="{StaticResource CardBorderBrush}" Margin="0,10" />
+
+            <!-- lokasi -->
+            <TextBlock Text="Lokasi untuk cuaca" Style="{StaticResource SectionTitle}" FontSize="13" />
+            <CheckBox Margin="0,6,0,0" Content="Pakai lokasi Windows" IsChecked="{Binding Settings.UseDeviceLocation}" />
+            <Grid Margin="0,6,0,0">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
+                <TextBox Style="{StaticResource InputBox}" Tag="Atau cari kota, misalnya Banjarmasin" MaxLength="80"
+                         Text="{Binding Settings.CityQuery, UpdateSourceTrigger=PropertyChanged}">
+                    <TextBox.InputBindings>
+                        <KeyBinding Key="Enter" Command="{Binding Settings.SearchCityCommand}" />
+                    </TextBox.InputBindings>
+                </TextBox>
+                <Button Grid.Column="1" Style="{StaticResource IconButton}" Content="&#xE721;" Margin="4,0,0,0"
+                        ToolTip="Cari kota" Command="{Binding Settings.SearchCityCommand}" />
+            </Grid>
+            <ItemsControl ItemsSource="{Binding Settings.SearchResults}" Margin="0,4,0,0">
+                <ItemsControl.ItemTemplate>
+                    <DataTemplate>
+                        <Button Style="{StaticResource Chip}" HorizontalAlignment="Left" Margin="0,0,0,3" Content="{Binding Name}"
+                                Command="{Binding DataContext.Settings.SelectPlaceCommand, RelativeSource={RelativeSource AncestorType=ItemsControl}}"
+                                CommandParameter="{Binding}" />
+                    </DataTemplate>
+                </ItemsControl.ItemTemplate>
+            </ItemsControl>
+            <TextBlock Text="{Binding Settings.LocationStatus}" Style="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,4,0,0" />
+            <TextBlock Style="{StaticResource Muted}" FontSize="10" TextWrapping="Wrap" Margin="0,4,0,0"
+                       Text="Yang dikirim ke Open-Meteo dan OpenStreetMap hanya koordinat yang dibulatkan." />
+
+            <Border Height="1" Background="{StaticResource CardBorderBrush}" Margin="0,10" />
+            <TextBlock Style="{StaticResource Muted}" FontSize="10" TextWrapping="Wrap"
+                       Text="Esc menutup tray. Untuk keluar, klik kanan ikon PatPet di system tray." />
+        </StackPanel>
+    </ScrollViewer>
+</UserControl>

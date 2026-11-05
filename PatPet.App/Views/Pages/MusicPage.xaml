@@ -1,0 +1,103 @@
+<UserControl x:Class="PatPet.Views.Pages.MusicPage"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+    <Grid>
+        <!-- Spotify tidak aktif -->
+        <StackPanel VerticalAlignment="Center" HorizontalAlignment="Center"
+                    Visibility="{Binding NowPlaying.IsAvailable, Converter={StaticResource BoolToVisInv}}">
+            <TextBlock Text="&#xE8D6;" FontFamily="{StaticResource IconFont}" FontSize="30" HorizontalAlignment="Center"
+                       Foreground="{StaticResource MutedBrush}" />
+            <TextBlock Text="Spotify belum dibuka" Style="{StaticResource SectionTitle}" HorizontalAlignment="Center" Margin="0,8,0,2" />
+            <TextBlock Text="Putar lagu di Spotify desktop, nanti muncul di sini." Style="{StaticResource Muted}" HorizontalAlignment="Center" />
+        </StackPanel>
+
+        <!-- Pemutar di kiri, lirik di kanan, garis waktu di bawah -->
+        <Grid Visibility="{Binding NowPlaying.IsAvailable, Converter={StaticResource BoolToVis}}">
+            <Grid.RowDefinitions>
+                <RowDefinition Height="*" />
+                <RowDefinition Height="Auto" />
+            </Grid.RowDefinitions>
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="128" />
+                <ColumnDefinition Width="*" />
+            </Grid.ColumnDefinitions>
+
+            <!-- pemutar -->
+            <StackPanel VerticalAlignment="Center">
+                <Border Width="100" Height="100" CornerRadius="10" Background="{StaticResource SurfaceHoverBrush}" HorizontalAlignment="Center">
+                    <Grid>
+                        <TextBlock Text="&#xE8D6;" FontFamily="{StaticResource IconFont}" FontSize="24"
+                                   HorizontalAlignment="Center" VerticalAlignment="Center" Foreground="{StaticResource MutedBrush}" />
+                        <Border CornerRadius="10" RenderOptions.BitmapScalingMode="HighQuality">
+                            <Border.Background>
+                                <ImageBrush ImageSource="{Binding NowPlaying.Cover}" Stretch="UniformToFill" />
+                            </Border.Background>
+                        </Border>
+                    </Grid>
+                </Border>
+                <TextBlock Text="{Binding NowPlaying.Title}" FontSize="13" FontWeight="SemiBold" Margin="0,8,0,0"
+                           HorizontalAlignment="Center" TextTrimming="CharacterEllipsis" MaxWidth="124"
+                           Foreground="{StaticResource TextBrush}" ToolTip="{Binding NowPlaying.Title}" />
+                <TextBlock Text="{Binding NowPlaying.Artist}" Style="{StaticResource Muted}" HorizontalAlignment="Center"
+                           TextTrimming="CharacterEllipsis" MaxWidth="124" />
+                <StackPanel Orientation="Horizontal" HorizontalAlignment="Center" Margin="0,6,0,0">
+                    <Button Style="{StaticResource IconButton}" Content="&#xE892;" Width="28" Height="28" FontSize="12"
+                            ToolTip="Lagu sebelumnya" Command="{Binding NowPlaying.PreviousCommand}" />
+                    <Button Style="{StaticResource AccentIconButton}" Content="{Binding NowPlaying.PlayPauseGlyph}"
+                            Width="34" Height="34" FontSize="13" Margin="6,0"
+                            ToolTip="Putar atau jeda" Command="{Binding NowPlaying.PlayPauseCommand}" />
+                    <Button Style="{StaticResource IconButton}" Content="&#xE893;" Width="28" Height="28" FontSize="12"
+                            ToolTip="Lagu berikutnya" Command="{Binding NowPlaying.NextCommand}" />
+                </StackPanel>
+            </StackPanel>
+
+            <!-- lirik -->
+            <Border Grid.Column="1" Margin="10,0,0,0" CornerRadius="12" Background="{StaticResource SurfaceBrush}" Padding="8,4"
+                    ToolTip="Lirik dari LRCLIB">
+                <Grid>
+                    <TextBlock Text="{Binding NowPlaying.LyricsStatus}" Style="{StaticResource Muted}"
+                               HorizontalAlignment="Center" VerticalAlignment="Center" TextAlignment="Center" TextWrapping="Wrap"
+                               Visibility="{Binding NowPlaying.HasLyrics, Converter={StaticResource BoolToVisInv}}" />
+                    <ScrollViewer x:Name="LyricsScroll" VerticalScrollBarVisibility="Hidden" Focusable="False"
+                                  Visibility="{Binding NowPlaying.HasLyrics, Converter={StaticResource BoolToVis}}">
+                        <ItemsControl x:Name="LyricsList" ItemsSource="{Binding NowPlaying.LyricLines}" Margin="0,80">
+                            <ItemsControl.ItemTemplate>
+                                <DataTemplate>
+                                    <TextBlock Text="{Binding Text}" TextWrapping="Wrap" TextAlignment="Center" Margin="2,3">
+                                        <TextBlock.Style>
+                                            <Style TargetType="TextBlock">
+                                                <Setter Property="FontSize" Value="12" />
+                                                <Setter Property="Foreground" Value="#FF7D8290" />
+                                                <Style.Triggers>
+                                                    <DataTrigger Binding="{Binding IsCurrent}" Value="True">
+                                                        <Setter Property="FontSize" Value="13.5" />
+                                                        <Setter Property="FontWeight" Value="SemiBold" />
+                                                        <Setter Property="Foreground" Value="White" />
+                                                    </DataTrigger>
+                                                </Style.Triggers>
+                                            </Style>
+                                        </TextBlock.Style>
+                                    </TextBlock>
+                                </DataTemplate>
+                            </ItemsControl.ItemTemplate>
+                        </ItemsControl>
+                    </ScrollViewer>
+                </Grid>
+            </Border>
+
+            <!-- garis waktu: seret untuk pindah posisi lagu -->
+            <StackPanel Grid.Row="1" Grid.ColumnSpan="2" Margin="0,8,0,0">
+                <Slider x:Name="Seek" Style="{StaticResource SeekSlider}" Minimum="0"
+                        Maximum="{Binding NowPlaying.DurationSeconds}"
+                        Value="{Binding NowPlaying.PositionSeconds, Mode=TwoWay}"
+                        ToolTip="Seret untuk pindah ke bagian lain lagu" />
+                <Grid>
+                    <TextBlock Text="{Binding NowPlaying.PositionText}" Style="{StaticResource Muted}" FontSize="10" HorizontalAlignment="Left" />
+                    <TextBlock Text="{Binding NowPlaying.StatusText}" Style="{StaticResource Muted}" FontSize="10"
+                               Foreground="{StaticResource WarnBrush}" HorizontalAlignment="Center" />
+                    <TextBlock Text="{Binding NowPlaying.DurationText}" Style="{StaticResource Muted}" FontSize="10" HorizontalAlignment="Right" />
+                </Grid>
+            </StackPanel>
+        </Grid>
+    </Grid>
+</UserControl>

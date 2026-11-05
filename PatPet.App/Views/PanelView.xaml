@@ -1,0 +1,34 @@
+<UserControl x:Class="PatPet.Views.PanelView"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+    <!-- Tray hitam solid -->
+    <Border x:Name="Card" Width="400" Background="{StaticResource CardBrush}" CornerRadius="18"
+            BorderBrush="{StaticResource CardBorderBrush}" BorderThickness="1" Padding="12,8,12,12">
+        <StackPanel>
+            <!-- Tab, satu fitur per halaman -->
+            <UniformGrid Rows="1" Columns="5">
+                <RadioButton Style="{StaticResource TabButton}" Tag="&#xE823;" Content="Waktu"
+                             IsChecked="{Binding CurrentPage, Converter={StaticResource EnumEquals}, ConverterParameter=Clock}" />
+                <RadioButton Style="{StaticResource TabButton}" Tag="&#xE8D6;" Content="Musik"
+                             IsChecked="{Binding CurrentPage, Converter={StaticResource EnumEquals}, ConverterParameter=Music}" />
+                <RadioButton Style="{StaticResource TabButton}" Tag="&#xE916;" Content="Timer"
+                             IsChecked="{Binding CurrentPage, Converter={StaticResource EnumEquals}, ConverterParameter=Focus}" />
+                <RadioButton Style="{StaticResource TabButton}" Tag="&#xE70B;" Content="Catatan"
+                             IsChecked="{Binding CurrentPage, Converter={StaticResource EnumEquals}, ConverterParameter=Notes}" />
+                <RadioButton Style="{StaticResource TabButton}" Tag="&#xE713;" Content="Atur"
+                             IsChecked="{Binding CurrentPage, Converter={StaticResource EnumEquals}, ConverterParameter=Settings}" />
+            </UniformGrid>
+            <Border Height="1" Background="{StaticResource CardBorderBrush}" Margin="0,6,0,10" />
+
+            <!-- Halaman aktif, dibuat baru tiap ganti tab. Tinggi tetap agar tray tidak memanjang. -->
+            <Border x:Name="PageClip" ClipToBounds="True" VerticalAlignment="Top">
+                <ContentControl x:Name="PageHost" Focusable="False" Height="240" VerticalAlignment="Top"
+                                Content="{Binding CurrentPage, Converter={StaticResource PageFactory}}">
+                    <ContentControl.RenderTransform>
+                        <TranslateTransform x:Name="PageShift" />
+                    </ContentControl.RenderTransform>
+                </ContentControl>
+            </Border>
+        </StackPanel>
+    </Border>
+</UserControl>

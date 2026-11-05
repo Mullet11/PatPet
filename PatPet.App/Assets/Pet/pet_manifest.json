@@ -1,0 +1,48 @@
+{
+  "frameWidth": 32,
+  "frameHeight": 32,
+  "animations": {
+    "idle": {
+      "file": "cat_idle.png",
+      "frames": 8,
+      "fps": 6,
+      "loop": true,
+      "description": "Diam, ekor bergoyang + kedip"
+    },
+    "music": {
+      "file": "cat_music.png",
+      "frames": 8,
+      "fps": 8,
+      "loop": true,
+      "description": "Spotify sedang play: headphone, kepala mengangguk"
+    },
+    "sleep": {
+      "file": "cat_sleep.png",
+      "frames": 8,
+      "fps": 4,
+      "loop": true,
+      "description": "Musik pause lama / idle: tidur + Zzz"
+    },
+    "focus": {
+      "file": "cat_focus.png",
+      "frames": 6,
+      "fps": 4,
+      "loop": true,
+      "description": "Sesi Pomodoro fokus: kacamata + membaca buku"
+    },
+    "happy": {
+      "file": "cat_happy.png",
+      "frames": 6,
+      "fps": 10,
+      "loop": false,
+      "description": "Diklik/dielus atau sesi selesai: lompat + hati"
+    },
+    "yawn": {
+      "file": "cat_yawn.png",
+      "frames": 6,
+      "fps": 6,
+      "loop": true,
+      "description": "Larut malam / mau tidur: menguap"
+    }
+  }
+}

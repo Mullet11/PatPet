@@ -1,0 +1,68 @@
+<UserControl x:Class="PatPet.Views.Pages.NotesPage"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:controls="clr-namespace:PatPet.Views.Controls">
+    <Grid>
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+        </Grid.RowDefinitions>
+
+        <!-- judul & cari -->
+        <Grid>
+            <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                <TextBlock Text="Catatan" Style="{StaticResource SectionTitle}" />
+                <Border Margin="6,0,0,0" Padding="6,1" CornerRadius="8" Background="#33FF6B6B" VerticalAlignment="Center"
+                        Visibility="{Binding Notes.OverdueCount, Converter={StaticResource PositiveToVis}}"
+                        ToolTip="Catatan yang lewat deadline">
+                    <TextBlock Text="{Binding Notes.OverdueCount, StringFormat={}{0} lewat}" FontSize="10"
+                               Foreground="{StaticResource DangerBrush}" />
+                </Border>
+            </StackPanel>
+            <TextBox Style="{StaticResource InputBox}" Width="130" HorizontalAlignment="Right" Tag="Cari…" MaxLength="80"
+                     Padding="8,3" Text="{Binding Notes.SearchText, UpdateSourceTrigger=PropertyChanged}" />
+        </Grid>
+
+        <!-- tambah catatan + deadline dalam satu baris -->
+        <Grid Grid.Row="1" Margin="0,8,0,8">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="Auto" />
+                <ColumnDefinition Width="Auto" />
+            </Grid.ColumnDefinitions>
+            <TextBox Style="{StaticResource InputBox}" Tag="Tulis catatan, Enter untuk simpan" MaxLength="4000"
+                     Text="{Binding Notes.NewNoteText, UpdateSourceTrigger=PropertyChanged}">
+                <TextBox.InputBindings>
+                    <KeyBinding Key="Enter" Command="{Binding Notes.AddCommand}" />
+                </TextBox.InputBindings>
+            </TextBox>
+            <controls:DeadlinePicker Grid.Column="1" Margin="6,0,0,0" VerticalAlignment="Center"
+                                     Value="{Binding Notes.NewDeadline}" Placeholder="Deadline" />
+            <Button Grid.Column="2" Style="{StaticResource AccentIconButton}" Width="30" Height="30" FontSize="12"
+                    Margin="6,0,0,0" Content="&#xE710;" ToolTip="Tambah catatan" Command="{Binding Notes.AddCommand}" />
+        </Grid>
+
+        <!-- daftar -->
+        <TextBlock Grid.Row="2" Text="Belum ada catatan." Style="{StaticResource Muted}" Margin="2,0,0,0" VerticalAlignment="Top"
+                   Visibility="{Binding Notes.IsEmpty, Converter={StaticResource BoolToVis}}" />
+        <ScrollViewer Grid.Row="2" VerticalScrollBarVisibility="Auto" Focusable="False">
+            <ItemsControl ItemsSource="{Binding Notes.Notes}">
+                <ItemsControl.ItemTemplate>
+                    <DataTemplate>
+                        <controls:NoteItem />
+                    </DataTemplate>
+                </ItemsControl.ItemTemplate>
+            </ItemsControl>
+        </ScrollViewer>
+
+        <Border Grid.Row="2" VerticalAlignment="Bottom" Padding="10,2,4,2" CornerRadius="10" Background="#FF3A2530"
+                Visibility="{Binding Notes.PendingDelete, Converter={StaticResource NullToVis}}">
+            <Grid>
+                <TextBlock Text="Catatan dihapus" Style="{StaticResource Label}" />
+                <Button HorizontalAlignment="Right" Style="{StaticResource TextButton}" Content="Batalkan"
+                        Command="{Binding Notes.UndoCommand}" />
+            </Grid>
+        </Border>
+    </Grid>
+</UserControl>

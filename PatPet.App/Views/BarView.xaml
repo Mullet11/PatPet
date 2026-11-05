@@ -1,0 +1,196 @@
+<UserControl x:Class="PatPet.Views.BarView"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:controls="clr-namespace:PatPet.Views.Controls">
+    <UserControl.Resources>
+        <!-- warna isi baterai sesuai kondisi -->
+        <Style x:Key="BatteryFill" TargetType="Border">
+            <Setter Property="Background" Value="{StaticResource TextBrush}" />
+            <Style.Triggers>
+                <DataTrigger Binding="{Binding System.Level}" Value="Low">
+                    <Setter Property="Background" Value="{StaticResource DangerBrush}" />
+                </DataTrigger>
+                <DataTrigger Binding="{Binding System.Level}" Value="Charging">
+                    <Setter Property="Background" Value="{StaticResource Accent2Brush}" />
+                </DataTrigger>
+            </Style.Triggers>
+        </Style>
+    </UserControl.Resources>
+
+    <Grid>
+    <!-- Bar hitam solid, menempel di tepi atas (sudut atas rata, sudut bawah membulat) -->
+    <Border x:Name="Bar" Background="Black" Width="112" CornerRadius="0,0,16,16"
+            HorizontalAlignment="Center" VerticalAlignment="Top" Cursor="Hand" ClipToBounds="True">
+      <StackPanel>
+        <Grid Height="34" Margin="6,0,12,0">
+            <!-- Isi normal -->
+            <Grid x:Name="Normal">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
+
+                <!-- selalu tampil: kucing + jam -->
+                <controls:SpriteAnimator Scale="1" VerticalAlignment="Center" Animation="{Binding Pet.RestingAnimation}" />
+                <TextBlock Grid.Column="1" Text="{Binding Clock.TimeText}" Margin="6,0,0,0" FontSize="14" FontWeight="SemiBold"
+                           VerticalAlignment="Center" Foreground="{StaticResource TextBrush}" />
+
+                <!-- peringatan alarm tetap tampil walau bar sedang kecil -->
+                <Border Grid.Column="3" Margin="8,0,0,0" Padding="7,1" CornerRadius="8" VerticalAlignment="Center"
+                        Background="{StaticResource AccentBrush}" ToolTip="Klik untuk matikan alarm"
+                        Visibility="{Binding Timer.IsAlarmRinging, Converter={StaticResource BoolToVis}}">
+                    <StackPanel Orientation="Horizontal">
+                        <TextBlock Text="&#xEA8F;" FontFamily="{StaticResource IconFont}" FontSize="10" Margin="0,1,4,0"
+                                   Foreground="#1B1C24" VerticalAlignment="Center" />
+                        <TextBlock Text="Waktu habis" FontSize="11" FontWeight="SemiBold" Foreground="#1B1C24" VerticalAlignment="Center" />
+                    </StackPanel>
+                </Border>
+
+                <!-- status lain: muncul saat hover atau saat tray terbuka -->
+                <StackPanel x:Name="Extras" Grid.Column="4" Orientation="Horizontal" VerticalAlignment="Center"
+                            Margin="10,0,0,0" Visibility="Collapsed" Opacity="0">
+                    <!-- sisa timer -->
+                    <Border Padding="7,1" CornerRadius="8" Background="#33FF8FB1" Margin="0,0,8,0" VerticalAlignment="Center"
+                            Visibility="{Binding Timer.IsActive, Converter={StaticResource BoolToVis}}">
+                        <StackPanel Orientation="Horizontal">
+                            <TextBlock Text="&#xE916;" FontFamily="{StaticResource IconFont}" FontSize="10" Margin="0,1,4,0"
+                                       Foreground="{StaticResource AccentBrush}" VerticalAlignment="Center" />
+                            <TextBlock Text="{Binding Timer.RemainingText}" FontSize="11" FontWeight="SemiBold"
+                                       Foreground="{StaticResource AccentBrush}" VerticalAlignment="Center" />
+                        </StackPanel>
+                    </Border>
+
+                    <!-- musik sedang diputar -->
+                    <TextBlock Text="&#xE8D6;" FontFamily="{StaticResource IconFont}" FontSize="11" Margin="0,0,8,0"
+                               VerticalAlignment="Center" Foreground="{StaticResource Accent2Brush}"
+                               Visibility="{Binding NowPlaying.IsPlaying, Converter={StaticResource BoolToVis}}" />
+
+                    <!-- baterai -->
+                    <StackPanel Orientation="Horizontal" VerticalAlignment="Center"
+                                Visibility="{Binding System.HasBattery, Converter={StaticResource BoolToVis}}">
+                        <TextBlock Text="&#xE945;" FontFamily="{StaticResource IconFont}" FontSize="10" Margin="0,0,3,0"
+                                   VerticalAlignment="Center" Foreground="{StaticResource Accent2Brush}"
+                                   Visibility="{Binding System.IsPlugged, Converter={StaticResource BoolToVis}}" />
+                        <Grid Width="24" Height="12" VerticalAlignment="Center">
+                            <Border Width="21" HorizontalAlignment="Left" BorderBrush="#B3FFFFFF" BorderThickness="1.2" CornerRadius="3" />
+                            <Border Width="2" Height="5" HorizontalAlignment="Right" Background="#B3FFFFFF" CornerRadius="0,1,1,0" />
+                            <Border Style="{StaticResource BatteryFill}" Margin="2.4,2.4,0,2.4" HorizontalAlignment="Left" CornerRadius="1.2"
+                                    Width="{Binding System.BatteryPercent, Converter={StaticResource PercentToLength}, ConverterParameter=16.2}" />
+                        </Grid>
+                        <TextBlock Text="{Binding System.BatteryText}" Margin="4,0,0,0" FontSize="12"
+                                   VerticalAlignment="Center" Foreground="{StaticResource TextBrush}" />
+                    </StackPanel>
+
+                    <!-- suhu -->
+                    <StackPanel Orientation="Horizontal" Margin="9,0,0,0" VerticalAlignment="Center"
+                                ToolTip="Suhu dari sensor laptop"
+                                Visibility="{Binding System.HasTemperature, Converter={StaticResource BoolToVis}}">
+                        <TextBlock Text="&#xE9CA;" FontFamily="{StaticResource IconFont}" FontSize="11" Margin="0,0,3,0"
+                                   VerticalAlignment="Center" Foreground="{StaticResource MutedBrush}" />
+                        <TextBlock Text="{Binding System.TemperatureText}" FontSize="12" VerticalAlignment="Center">
+                            <TextBlock.Style>
+                                <Style TargetType="TextBlock">
+                                    <Setter Property="Foreground" Value="{StaticResource TextBrush}" />
+                                    <Style.Triggers>
+                                        <DataTrigger Binding="{Binding System.IsHot}" Value="True">
+                                            <Setter Property="Foreground" Value="{StaticResource WarnBrush}" />
+                                        </DataTrigger>
+                                    </Style.Triggers>
+                                </Style>
+                            </TextBlock.Style>
+                        </TextBlock>
+                    </StackPanel>
+                </StackPanel>
+            </Grid>
+
+            <!-- Notifikasi charger dicolok / dicabut (animasi singkat) -->
+            <Grid x:Name="Toast" Visibility="Collapsed" Opacity="0">
+                <StackPanel Orientation="Horizontal" HorizontalAlignment="Center" VerticalAlignment="Center">
+                    <TextBlock x:Name="ToastIcon" Text="&#xE945;" FontFamily="{StaticResource IconFont}" FontSize="14"
+                               VerticalAlignment="Center" Foreground="{StaticResource Accent2Brush}" RenderTransformOrigin="0.5,0.5">
+                        <TextBlock.RenderTransform>
+                            <ScaleTransform x:Name="ToastIconScale" />
+                        </TextBlock.RenderTransform>
+                    </TextBlock>
+                    <TextBlock x:Name="ToastText" Margin="8,0,10,0" FontSize="12" FontWeight="SemiBold"
+                               VerticalAlignment="Center" Foreground="{StaticResource TextBrush}" />
+                    <Grid Width="40" Height="16" VerticalAlignment="Center">
+                        <Border Width="36" HorizontalAlignment="Left" BorderBrush="#CCFFFFFF" BorderThickness="1.5" CornerRadius="4" />
+                        <Border Width="3" Height="7" HorizontalAlignment="Right" Background="#CCFFFFFF" CornerRadius="0,1.5,1.5,0" />
+                        <Border x:Name="ToastFill" Margin="3,3,0,3" HorizontalAlignment="Left" CornerRadius="2" Width="0"
+                                Background="{StaticResource Accent2Brush}" />
+                    </Grid>
+                    <TextBlock Text="{Binding System.BatteryText}" Margin="6,0,0,0" FontSize="12"
+                               VerticalAlignment="Center" Foreground="{StaticResource TextBrush}" />
+                </StackPanel>
+            </Grid>
+        </Grid>
+
+        <!-- Detail saat hover: bar sedikit melebar & memanjang (cuaca + lagu sedang/terakhir diputar) -->
+        <Border x:Name="Details" Height="0" Opacity="0" ClipToBounds="True" Margin="14,0,14,0">
+            <Grid Height="38" VerticalAlignment="Top">
+                <Border Height="1" Background="{StaticResource CardBorderBrush}" VerticalAlignment="Top" />
+                <Grid Margin="0,1,0,3">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="*" />
+                    </Grid.ColumnDefinitions>
+
+                    <!-- cuaca: suhu + keadaan -->
+                    <StackPanel Orientation="Horizontal" VerticalAlignment="Center"
+                                Visibility="{Binding Clock.HasWeather, Converter={StaticResource BoolToVis}}">
+                        <TextBlock Text="{Binding Clock.WeatherGlyph}" FontFamily="Segoe UI Symbol" FontSize="15" Margin="0,0,6,0"
+                                   VerticalAlignment="Center" Foreground="{StaticResource WarnBrush}" />
+                        <TextBlock Text="{Binding Clock.TemperatureText}" FontSize="13" FontWeight="SemiBold" VerticalAlignment="Center"
+                                   Foreground="{StaticResource TextBrush}" Margin="0,0,5,0" />
+                        <TextBlock Text="{Binding Clock.WeatherText}" FontSize="11" VerticalAlignment="Center"
+                                   Foreground="{StaticResource MutedBrush}" />
+                    </StackPanel>
+                    <TextBlock Text="Memuat cuaca…" FontSize="11" VerticalAlignment="Center" Foreground="{StaticResource MutedBrush}"
+                               Visibility="{Binding Clock.HasWeather, Converter={StaticResource BoolToVisInv}}" />
+
+                    <Border Grid.Column="1" Width="1" Height="16" Margin="12,0" Background="{StaticResource CardBorderBrush}" />
+
+                    <!-- lagu sedang diputar / terakhir diputar -->
+                    <Grid Grid.Column="2" VerticalAlignment="Center" Visibility="{Binding NowPlaying.HasLastTrack, Converter={StaticResource BoolToVis}}">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="*" />
+                        </Grid.ColumnDefinitions>
+                        <TextBlock Text="&#xE8D6;" FontFamily="{StaticResource IconFont}" FontSize="11" Margin="0,1,6,0" VerticalAlignment="Center">
+                            <TextBlock.Style>
+                                <Style TargetType="TextBlock">
+                                    <Setter Property="Foreground" Value="{StaticResource MutedBrush}" />
+                                    <Style.Triggers>
+                                        <DataTrigger Binding="{Binding NowPlaying.IsPlaying}" Value="True">
+                                            <Setter Property="Foreground" Value="{StaticResource Accent2Brush}" />
+                                        </DataTrigger>
+                                    </Style.Triggers>
+                                </Style>
+                            </TextBlock.Style>
+                        </TextBlock>
+                        <TextBlock Grid.Column="1" Text="Terakhir:" FontSize="11" Margin="0,0,5,0" VerticalAlignment="Center"
+                                   Foreground="{StaticResource MutedBrush}"
+                                   Visibility="{Binding NowPlaying.IsPlaying, Converter={StaticResource BoolToVisInv}}" />
+                        <TextBlock Grid.Column="2" FontSize="12" VerticalAlignment="Center" TextTrimming="CharacterEllipsis"
+                                   ToolTip="{Binding NowPlaying.LastTitle}">
+                            <Run Text="{Binding NowPlaying.LastTitle, Mode=OneWay}" FontWeight="SemiBold" Foreground="{StaticResource TextBrush}" />
+                            <Run Text=" · " Foreground="{StaticResource MutedBrush}" />
+                            <Run Text="{Binding NowPlaying.LastArtist, Mode=OneWay}" Foreground="{StaticResource MutedBrush}" />
+                        </TextBlock>
+                    </Grid>
+                    <TextBlock Grid.Column="2" Text="Belum ada lagu" FontSize="11" VerticalAlignment="Center"
+                               Foreground="{StaticResource MutedBrush}"
+                               Visibility="{Binding NowPlaying.HasLastTrack, Converter={StaticResource BoolToVisInv}}" />
+                </Grid>
+            </Grid>
+        </Border>
+      </StackPanel>
+    </Border>
+    </Grid>
+</UserControl>
