@@ -10,7 +10,12 @@
     <AssemblyName>PatPet</AssemblyName>
     <RootNamespace>PatPet</RootNamespace>
     <Product>PatPet</Product>
-    <Version>1.1.0</Version>
+    <Version>1.4.0</Version>
+    <FileVersion>1.4.0.0</FileVersion>
+    <AssemblyVersion>1.4.0.0</AssemblyVersion>
+    <Description>Widget desktop kucing pixel art: jam, cuaca, Spotify, timer, dan catatan.</Description>
+    <Copyright>PatPet</Copyright>
+    <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
     <ApplicationIcon>Assets\app.ico</ApplicationIcon>
     <SatelliteResourceLanguages>en;id</SatelliteResourceLanguages>
 
