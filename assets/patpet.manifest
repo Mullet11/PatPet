@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<!--
+  Manifest aplikasi yang ditanam di patpet.exe.
+  Elemen <msix> menghubungkan exe dengan paket identitas di packaging/,
+  supaya PatPet boleh membaca notifikasi aplikasi lain. Bila paketnya tidak
+  dipasang, Windows mengabaikan elemen ini dan PatPet berjalan seperti biasa.
+  Nilai publisher dan packageName harus sama dengan packaging/AppxManifest.xml.
+-->
+<assembly manifestVersion="1.0" xmlns="urn:schemas-microsoft-com:asm.v1">
+  <assemblyIdentity version="2.0.0.0" name="PatPet" type="win32" />
+  <msix xmlns="urn:schemas-microsoft-com:msix.v1"
+        publisher="CN=PatPet Local"
+        packageName="PatPet"
+        applicationId="PatPet" />
+  <application xmlns="urn:schemas-microsoft-com:asm.v3">
+    <windowsSettings>
+      <dpiAwareness xmlns="http://schemas.microsoft.com/SMI/2016/WindowsSettings">PerMonitorV2</dpiAwareness>
+    </windowsSettings>
+  </application>
+</assembly>

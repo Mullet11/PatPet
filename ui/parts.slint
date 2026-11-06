@@ -1,0 +1,652 @@
+import { Palette, Type, Space, Radius, Size, Motion } from "theme.slint";
+
+// Keterangan saat hover. Elemen yang di-hover mengisi nilai ini; satu
+// TooltipView di jendela utama menggambarnya paling atas, jadi tidak
+// terpotong panel atau tertutup elemen lain.
+export global Tooltip {
+    in-out property <string> text;
+    // Tengah horizontal serta tepi atas/bawah elemen, dalam koordinat jendela.
+    in-out property <length> x;
+    in-out property <length> top;
+    in-out property <length> bottom;
+}
+
+// Taruh di dalam elemen (bukan di dalam layout); ukurannya mengikuti induk.
+// Tidak menangkap klik.
+export component HoverTip {
+    in property <string> text;
+    in property <bool> active;
+    width: 100%;
+    height: 100%;
+
+    // Teks yang sedang dipasang elemen ini, supaya hanya keterangan miliknya
+    // sendiri yang dihapus (teks bisa berubah selama kursor masih di atasnya).
+    property <string> posted;
+
+    function update() {
+        if (self.active && self.text != "") {
+            Tooltip.text = self.text;
+            Tooltip.x = self.absolute-position.x + self.width / 2;
+            Tooltip.top = self.absolute-position.y;
+            Tooltip.bottom = self.absolute-position.y + self.height;
+            self.posted = self.text;
+        } else if (self.posted != "" && Tooltip.text == self.posted) {
+            Tooltip.text = "";
+            self.posted = "";
+        }
+    }
+
+    changed active => { self.update(); }
+    changed text => { self.update(); }
+}
+
+// Gelembung keterangan; muncul setelah kursor diam sebentar.
+export component TooltipView {
+
+    property <string> text: Tooltip.text;
+    property <bool> shown;
+    changed text => { self.shown = false; }
+
+    Timer {
+        interval: Motion.tip-delay;
+        running: root.text != "" && !root.shown;
+        triggered => { root.shown = true; }
+    }
+
+    // Hilang sendiri, juga bila elemen pemiliknya lenyap saat masih di-hover
+    // (mis. catatan yang baru dihapus).
+    Timer {
+        interval: Motion.tip-hide;
+        running: root.shown;
+        triggered => {
+            root.shown = false;
+            Tooltip.text = "";
+        }
+    }
+
+    if root.shown && root.text != "": Rectangle {
+        property <length> below: Tooltip.bottom + Space.xs;
+        width: label.preferred-width + 2 * Space.sm;
+        height: label.preferred-height + Space.sm;
+        x: Math.clamp(Tooltip.x - self.width / 2, Space.xs, root.width - self.width - Space.xs);
+        y: self.below + self.height > root.height ? Tooltip.top - Space.xs - self.height : self.below;
+        border-radius: Radius.control;
+        border-width: 1px;
+        border-color: Palette.line;
+        background: Palette.raised-hover;
+
+        label := Text {
+            text: root.text;
+            font-size: Type.caption;
+            color: Palette.text;
+        }
+    }
+}
+
+// Glyph Segoe MDL2 Assets yang dipakai, supaya kode tidak berisi angka acak.
+export global Icon {
+    out property <string> refresh: "\u{E72C}";
+    out property <string> bolt: "\u{E945}";
+    out property <string> thermometer: "\u{E9CA}";
+    out property <string> music: "\u{E8D6}";
+    out property <string> previous: "\u{E892}";
+    out property <string> next: "\u{E893}";
+    out property <string> play: "\u{E768}";
+    out property <string> pause: "\u{E769}";
+    out property <string> stop: "\u{E71A}";
+    out property <string> up: "\u{E70E}";
+    out property <string> down: "\u{E70D}";
+    out property <string> timer: "\u{E916}";
+    out property <string> alarm: "\u{EA8F}";
+    out property <string> search: "\u{E721}";
+    out property <string> add: "\u{E710}";
+    out property <string> remove: "\u{E738}";
+    out property <string> calendar: "\u{E787}";
+    out property <string> pin: "\u{E718}";
+    out property <string> delete: "\u{E74D}";
+    out property <string> check: "\u{E73E}";
+    out property <string> left: "\u{E76B}";
+    out property <string> right: "\u{E76C}";
+    out property <string> camera: "\u{E722}";
+    out property <string> close: "\u{E711}";
+}
+
+// Notifikasi yang sedang tampil di island.
+export struct NoticeView {
+    active: bool,
+    glyph: string,
+    title: string,
+    body: string,
+    // Peringatan (merah) atau biasa (aksen).
+    alert: bool,
+    // Logo aplikasi pengirim, menggantikan glyph.
+    has-image: bool,
+    image: image,
+    // 0–1; negatif = tanpa garis level
+    level: float,
+}
+
+export struct Power {
+    has-battery: bool,
+    percent: int,
+    plugged: bool,
+}
+
+export component IconButton inherits Rectangle {
+    // Keterangan saat hover; kosong = tanpa keterangan.
+    in property <string> tip;
+    in property <string> glyph;
+    in property <bool> enabled: true;
+    callback clicked();
+
+    width: Size.hit;
+    height: Size.hit;
+    border-radius: Radius.control;
+    background: !root.enabled ? transparent
+        : touch.pressed ? Palette.line
+        : touch.has-hover ? Palette.raised-hover
+        : transparent;
+    animate background { duration: Motion.quick; easing: Motion.ease; }
+
+    Text {
+        text: root.glyph;
+        font-family: Type.icons;
+        font-size: Size.icon;
+        color: root.enabled ? Palette.text : Palette.faint;
+    }
+
+    HoverTip {
+        text: root.tip;
+        active: touch.has-hover;
+    }
+
+    touch := TouchArea {
+        enabled: root.enabled;
+        clicked => { root.clicked(); }
+    }
+}
+
+// Baterai kecil: garis luar, kutub, dan isi sesuai persen.
+export component Battery {
+    in property <Power> power;
+
+    property <color> fill: power.plugged ? Palette.battery-charging
+        : power.percent <= 20 ? Palette.battery-low
+        : Palette.battery;
+
+    width: Size.battery-width;
+    height: Size.battery-height;
+
+    Rectangle {
+        x: 0;
+        width: parent.width - 2px;
+        border-width: 1px;
+        border-radius: 3px;
+        border-color: Palette.muted;
+
+        Rectangle {
+            x: 2px;
+            y: 2px;
+            height: parent.height - 4px;
+            width: (parent.width - 4px) * Math.clamp(root.power.percent, 0, 100) / 100;
+            border-radius: 1px;
+            background: root.fill;
+        }
+    }
+
+    Rectangle {
+        x: parent.width - 2px;
+        width: 2px;
+        height: 5px;
+        border-radius: 1px;
+        background: Palette.muted;
+    }
+}
+
+// Tombol aksi utama: lingkaran berwarna aksen.
+export component PrimaryButton inherits Rectangle {
+    // Keterangan saat hover; kosong = tanpa keterangan.
+    in property <string> tip;
+    in property <string> glyph;
+    callback clicked();
+
+    width: Size.hit-primary;
+    height: Size.hit-primary;
+    border-radius: self.width / 2;
+    background: Palette.accent;
+    opacity: touch.pressed ? 0.7 : touch.has-hover ? 0.85 : 1;
+    animate opacity { duration: Motion.quick; easing: Motion.ease; }
+
+    Text {
+        text: root.glyph;
+        font-family: Type.icons;
+        font-size: Size.icon;
+        color: Palette.on-accent;
+    }
+
+    HoverTip {
+        text: root.tip;
+        active: touch.has-hover;
+    }
+
+    touch := TouchArea {
+        clicked => { root.clicked(); }
+    }
+}
+
+// Pilihan tab: yang aktif berlatar `raised`, sisanya teks redup.
+export component Tabs {
+    in property <[string]> labels;
+    in property <int> current;
+    callback select(int);
+
+    HorizontalLayout {
+        alignment: start;
+        spacing: Space.xs;
+
+        for label[i] in root.labels: Rectangle {
+            height: Size.tab-height;
+            border-radius: Radius.control;
+            background: i == root.current ? Palette.raised : transparent;
+            animate background { duration: Motion.quick; easing: Motion.ease; }
+
+            HorizontalLayout {
+                padding-left: Space.md;
+                padding-right: Space.md;
+
+                Text {
+                    text: label;
+                    vertical-alignment: center;
+                    font-weight: i == root.current ? Type.semibold : Type.regular;
+                    color: i == root.current || touch.has-hover ? Palette.text : Palette.muted;
+                }
+            }
+
+            touch := TouchArea {
+                clicked => { root.select(i); }
+            }
+        }
+    }
+}
+
+// Garis waktu yang bisa diklik atau diseret. `value` 0–1.
+export component SeekBar {
+    // Keterangan saat hover; kosong = tanpa keterangan.
+    in property <string> tip;
+    in property <float> value;
+    in property <color> fill: Palette.music-progress;
+    in property <bool> enabled: true;
+    callback seek(float);
+
+    height: Size.knob + Space.xs;
+    property <float> shown: touch.pressed ? Math.clamp(touch.mouse-x / self.width, 0, 1) : Math.clamp(root.value, 0, 1);
+
+    Rectangle {
+        y: (parent.height - self.height) / 2;
+        height: Size.track;
+        border-radius: self.height / 2;
+        background: Palette.line;
+
+        Rectangle {
+            x: 0;
+            width: parent.width * root.shown;
+            border-radius: self.height / 2;
+            background: root.fill;
+        }
+    }
+
+    Rectangle {
+        visible: root.enabled && (touch.has-hover || touch.pressed);
+        x: parent.width * root.shown - self.width / 2;
+        y: (parent.height - self.height) / 2;
+        width: Size.knob;
+        height: Size.knob;
+        border-radius: self.width / 2;
+        background: Palette.text;
+    }
+
+    HoverTip {
+        text: root.tip;
+        active: touch.has-hover;
+    }
+
+    touch := TouchArea {
+        enabled: root.enabled;
+        pointer-event(e) => {
+            if (e.kind == PointerEventKind.up && e.button == PointerEventButton.left) {
+                root.seek(Math.clamp(self.mouse-x / root.width, 0, 1));
+            }
+        }
+    }
+}
+
+// Tombol teks kecil, mis. "+5m".
+export component Chip inherits Rectangle {
+    // Keterangan saat hover; kosong = tanpa keterangan.
+    in property <string> tip;
+    in property <string> text;
+    in property <bool> subtle;
+    // Pilihan yang sedang aktif dalam satu kelompok chip.
+    in property <bool> selected;
+    callback clicked();
+
+    height: Size.chip-height;
+    border-radius: Radius.control;
+    border-width: 1px;
+    border-color: root.selected ? Palette.accent : transparent;
+    background: touch.pressed ? Palette.line : touch.has-hover ? Palette.raised-hover : Palette.raised;
+    animate background { duration: Motion.quick; easing: Motion.ease; }
+
+    HorizontalLayout {
+        padding-left: Space.md;
+        padding-right: Space.md;
+
+        Text {
+            text: root.text;
+            font-size: Type.caption;
+            color: root.subtle ? Palette.muted : Palette.text;
+            vertical-alignment: center;
+        }
+    }
+
+    HoverTip {
+        text: root.tip;
+        active: touch.has-hover;
+    }
+
+    touch := TouchArea {
+        clicked => { root.clicked(); }
+    }
+}
+
+// Tombol teks utama berwarna aksen, mis. "Matikan alarm".
+export component PillButton inherits Rectangle {
+    in property <string> text;
+    callback clicked();
+
+    height: Size.hit-primary;
+    border-radius: self.height / 2;
+    background: Palette.accent;
+    opacity: touch.pressed ? 0.7 : touch.has-hover ? 0.85 : 1;
+    animate opacity { duration: Motion.quick; easing: Motion.ease; }
+
+    HorizontalLayout {
+        padding-left: Space.xl;
+        padding-right: Space.xl;
+
+        Text {
+            text: root.text;
+            font-weight: Type.semibold;
+            color: Palette.on-accent;
+            vertical-alignment: center;
+        }
+    }
+
+    touch := TouchArea {
+        clicked => { root.clicked(); }
+    }
+}
+
+// Sakelar nyala/mati dengan label di kanannya.
+export component Toggle {
+    in property <string> text;
+    in-out property <bool> checked;
+    callback toggled(bool);
+
+    HorizontalLayout {
+        spacing: Space.sm;
+
+        Rectangle {
+            y: (parent.height - self.height) / 2;
+            width: Size.switch-width;
+            height: Size.switch-height;
+            border-radius: self.height / 2;
+            background: root.checked ? Palette.switch-on : Palette.line;
+            animate background { duration: Motion.quick; easing: Motion.ease; }
+
+            Rectangle {
+                x: root.checked ? parent.width - self.width - 2px : 2px;
+                animate x { duration: Motion.quick; easing: Motion.ease; }
+                width: parent.height - 4px;
+                height: self.width;
+                border-radius: self.width / 2;
+                background: root.checked ? Palette.on-accent : Palette.muted;
+            }
+        }
+
+        Text {
+            text: root.text;
+            color: Palette.text;
+            vertical-alignment: center;
+        }
+    }
+
+    TouchArea {
+        clicked => {
+            root.checked = !root.checked;
+            root.toggled(root.checked);
+        }
+    }
+}
+
+// Panah kecil di atas/bawah angka timer.
+export component ArrowButton inherits Rectangle {
+    // Keterangan saat hover; kosong = tanpa keterangan.
+    in property <string> tip;
+    in property <string> glyph;
+    callback clicked();
+
+    width: Size.digit-width;
+    height: Size.arrow-height;
+    border-radius: Radius.control;
+    background: touch.pressed ? Palette.line : touch.has-hover ? Palette.raised-hover : transparent;
+
+    Text {
+        text: root.glyph;
+        font-family: Type.icons;
+        font-size: Size.icon-small;
+        color: touch.has-hover ? Palette.text : Palette.muted;
+    }
+
+    HoverTip {
+        text: root.tip;
+        active: touch.has-hover;
+    }
+
+    touch := TouchArea {
+        clicked => { root.clicked(); }
+    }
+}
+
+// Angka dua digit yang bisa diketik (masuk dari kanan seperti microwave),
+// digulir, atau diubah dengan panah. Berputar: 59 → 00.
+export component NumberField inherits Rectangle {
+    // Keterangan saat hover; kosong = tanpa keterangan.
+    in property <string> tip;
+    in-out property <int> value;
+    in property <int> max: 59;
+    in property <int> step: 1;
+    in property <length> font-size: Type.hero;
+    callback submit();
+
+    public function bump(direction: int) {
+        root.value = Math.mod(root.value + direction * root.step + root.max + 1, root.max + 1);
+    }
+
+    border-radius: Radius.control;
+    background: focus.has-focus ? Palette.raised : transparent;
+    border-width: 1px;
+    border-color: focus.has-focus ? Palette.focus-ring : transparent;
+
+    Text {
+        text: root.value < 10 ? "0" + root.value : root.value;
+        font-family: Type.display;
+        font-size: root.font-size;
+        font-weight: Type.semibold;
+        color: Palette.text;
+    }
+
+    HoverTip {
+        text: root.tip;
+        active: area.has-hover;
+    }
+
+    area := TouchArea {
+        clicked => { focus.focus(); }
+        scroll-event(e) => {
+            root.bump(e.delta-y > 0 ? 1 : -1);
+            accept
+        }
+    }
+
+    focus := FocusScope {
+        key-pressed(e) => {
+            if (e.text == Key.UpArrow) {
+                root.bump(1);
+                return accept;
+            }
+            if (e.text == Key.DownArrow) {
+                root.bump(-1);
+                return accept;
+            }
+            if (e.text == Key.Backspace) {
+                root.value = Math.floor(root.value / 10);
+                return accept;
+            }
+            if (e.text == Key.Return) {
+                root.submit();
+                return accept;
+            }
+            if (e.text.is-float() && e.text.character-count == 1) {
+                root.value = Math.min(root.max, Math.mod(root.value * 10 + e.text.to-float(), 100));
+                return accept;
+            }
+            reject
+        }
+    }
+}
+
+// Kolom teks satu baris dengan placeholder dan latar `raised`.
+export component TextField inherits Rectangle {
+    in-out property <string> text;
+    in property <string> placeholder;
+    in property <string> glyph;
+    callback edited(string);
+    callback accepted(string);
+
+    height: Size.field-height;
+    border-radius: Radius.control;
+    background: Palette.raised;
+    border-width: 1px;
+    border-color: input.has-focus ? Palette.line : transparent;
+
+    HorizontalLayout {
+        padding-left: Space.sm;
+        padding-right: Space.sm;
+        spacing: Space.sm;
+
+        if root.glyph != "": Text {
+            text: root.glyph;
+            font-family: Type.icons;
+            font-size: Size.icon-small;
+            color: Palette.muted;
+            vertical-alignment: center;
+        }
+
+        Rectangle {
+            horizontal-stretch: 1;
+
+            if root.text == "": Text {
+                x: 0;
+                width: 100%;
+                text: root.placeholder;
+                color: Palette.faint;
+                vertical-alignment: center;
+            }
+
+            input := TextInput {
+                text <=> root.text;
+                color: Palette.text;
+                selection-background-color: Palette.line;
+                selection-foreground-color: Palette.text;
+                vertical-alignment: center;
+                single-line: true;
+                edited => { root.edited(self.text); }
+                accepted => { root.accepted(self.text); }
+            }
+        }
+    }
+}
+
+// Roda angka (jam atau menit): gulir mouse, seret, atau klik angka di atas/bawah.
+// Angka berputar (59 → 00). Saat diseret, angka ikut bergeser mengikuti kursor.
+export component TimeWheel inherits Rectangle {
+    in-out property <int> value;
+    in property <int> max: 59;
+    in property <string> tip;
+
+    // Nilai saat mulai diseret.
+    property <int> start;
+    // Langkah sejak mulai diseret: seret ke atas = angka naik.
+    property <int> steps: touch.pressed ? Math.round((touch.pressed-y - touch.mouse-y) / Size.wheel-row) : 0;
+    // Sisa geser di bawah satu baris, supaya gerak terasa halus.
+    property <length> drift: touch.pressed ? touch.mouse-y - touch.pressed-y + root.steps * Size.wheel-row : 0;
+
+    function wrap(v: int) -> int {
+        return Math.mod(v + (root.max + 1) * 1000, root.max + 1);
+    }
+
+    width: Size.wheel-width;
+    height: Size.wheel-row * 5;
+    border-radius: Radius.control;
+    background: Palette.raised;
+    clip: true;
+
+    // Pita angka terpilih
+    Rectangle {
+        y: (parent.height - Size.wheel-row) / 2;
+        height: Size.wheel-row;
+        border-radius: Radius.control;
+        background: Palette.raised-hover;
+    }
+
+    for k in [-3, -2, -1, 0, 1, 2, 3]: Text {
+        property <int> v: root.wrap(root.value + k);
+        y: (parent.height - Size.wheel-row) / 2 + k * Size.wheel-row + root.drift;
+        height: Size.wheel-row;
+        width: parent.width;
+        text: self.v < 10 ? "0" + self.v : self.v;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+        font-family: Type.display;
+        font-size: k == 0 ? Type.title : Type.body;
+        font-weight: k == 0 ? Type.semibold : Type.regular;
+        color: k == 0 ? Palette.text : Math.abs(k) == 1 ? Palette.muted : Palette.faint;
+    }
+
+    HoverTip {
+        text: root.tip;
+        active: touch.has-hover && !touch.pressed;
+    }
+
+    touch := TouchArea {
+        scroll-event(e) => {
+            root.value = root.wrap(root.value + (e.delta-y > 0 ? -1 : 1));
+            accept
+        }
+        pointer-event(e) => {
+            if (e.kind == PointerEventKind.down) {
+                root.start = root.value;
+            }
+        }
+        moved => {
+            root.value = root.wrap(root.start + root.steps);
+        }
+        clicked => {
+            // Klik tanpa seret: pilih angka yang diklik.
+            if (Math.abs(self.mouse-y - self.pressed-y) < Size.wheel-row / 3) {
+                root.value = root.wrap(root.value + Math.round((self.mouse-y - root.height / 2) / Size.wheel-row));
+            }
+        }
+    }
+}

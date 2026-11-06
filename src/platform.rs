@@ -6,6 +6,7 @@
 //! penuh otomatis meneruskan klik ke jendela di belakangnya.
 
 use std::cell::{Cell, RefCell};
+use std::path::{Path, PathBuf};
 use std::rc::{Rc, Weak};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -19,10 +20,10 @@ use slint::platform::{
 };
 use slint::{EventLoopError, LogicalPosition, LogicalSize, PhysicalSize, PlatformError};
 use windows::core::w;
-use windows::Win32::Foundation::{COLORREF, HWND, LPARAM, LRESULT, POINT, RECT, SIZE, WPARAM};
+use windows::Win32::Foundation::{COLORREF, HANDLE, HWND, LPARAM, LRESULT, POINT, RECT, SIZE, WPARAM};
 use windows::Win32::Graphics::Gdi::{
     CreateCompatibleDC, CreateDIBSection, DeleteDC, DeleteObject, GetMonitorInfoW,
-    MonitorFromWindow, SelectObject, AC_SRC_ALPHA, AC_SRC_OVER, BITMAPINFO, BITMAPINFOHEADER,
+    MonitorFromPoint, MonitorFromWindow, ScreenToClient, SelectObject, MONITOR_DEFAULTTONEAREST, AC_SRC_ALPHA, AC_SRC_OVER, BITMAPINFO, BITMAPINFOHEADER,
     BI_RGB, BLENDFUNCTION, DIB_RGB_COLORS, HBITMAP, HDC, HGDIOBJ, MONITORINFO,
     MONITOR_DEFAULTTOPRIMARY,
 };
@@ -33,21 +34,208 @@ use windows::Win32::UI::HiDpi::{
     GetDpiForWindow, SetProcessDpiAwarenessContext, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
 };
 use windows::Win32::UI::Input::KeyboardAndMouse::{
-    GetLastInputInfo, ReleaseCapture, SetCapture, TrackMouseEvent, LASTINPUTINFO, TME_LEAVE,
-    TRACKMOUSEEVENT,
+    GetKeyState, GetLastInputInfo, ReleaseCapture, SetCapture, TrackMouseEvent, LASTINPUTINFO, TME_LEAVE,
+    TRACKMOUSEEVENT, VIRTUAL_KEY, VK_BACK, VK_CONTROL, VK_DELETE, VK_DOWN, VK_END, VK_ESCAPE,
+    VK_CAPITAL, VK_HOME, VK_LEFT, VK_RETURN, VK_RIGHT, VK_SHIFT, VK_TAB, VK_UP,
 };
 use windows::Win32::UI::WindowsAndMessaging::*;
+
+use crate::placement::Rect;
+use crate::{clipboard, dragdrop, tray};
 
 /// Pesan untuk membangunkan loop saat ada kerja dari thread lain.
 const WM_WAKE: u32 = WM_APP + 1;
 /// Tidak diekspor modul WindowsAndMessaging di crate `windows`.
 const WM_MOUSELEAVE: u32 = 0x02A3;
+/// Jarak gulir per satu klik roda mouse, dalam piksel logis.
+const WHEEL_STEP: f32 = 40.0;
+
+/// Kejadian sistem yang diteruskan ke aplikasi.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Event {
+    TrayClick,
+    TrayMenu,
+    /// Pengguna mengklik di luar jendela.
+    Deactivated,
+    Escape,
+    /// Charger dicolok/dicabut atau persentase baterai berubah.
+    PowerChanged,
+    ScaleChanged(f32),
+    /// Resolusi atau susunan monitor berubah.
+    DisplayChanged,
+    /// Kecerahan layar berubah, dalam persen.
+    Brightness(u32),
+    /// Mode hemat baterai nyala/mati.
+    BatterySaver(bool),
+    CapsLock(bool),
+    /// Isi clipboard berubah (oleh aplikasi mana pun).
+    ClipboardChanged,
+    /// File sedang diseret di atas island (`true`) atau sudah pergi (`false`).
+    DragHover(bool),
+    FilesDropped(Vec<PathBuf>),
+}
+
+thread_local! {
+    static HANDLER: RefCell<Option<Rc<dyn Fn(Event)>>> = RefCell::default();
+}
+
+/// Mendaftarkan penerima [`Event`]. Hanya satu; pendaftaran baru menggantikan yang lama.
+pub fn on_event(handler: impl Fn(Event) + 'static) {
+    HANDLER.with(|h| *h.borrow_mut() = Some(Rc::new(handler)));
+}
+
+fn emit(event: Event) {
+    // Klon dulu supaya handler bebas memanggil fungsi platform lain.
+    if let Some(handler) = HANDLER.with(|h| h.borrow().clone()) {
+        handler(event);
+    }
+}
+
+/// Seret file `path` keluar dari jendela. Memblokir sampai dilepas; panggil
+/// saat tombol mouse masih ditekan. `true` bila Explorer menerimanya.
+pub fn drag_out(path: &Path) -> bool {
+    let Some(w) = current_window() else { return false };
+    let Some(hwnd) = w.hwnd.get() else { return false };
+    let moved = dragdrop::drag_out(hwnd, path);
+    // Loop seret OLE menelan pelepasan tombol; beri tahu Slint supaya
+    // kartu yang diseret tidak tetap dalam keadaan ditekan.
+    let mut at = POINT::default();
+    // SAFETY: hwnd valid, titik milik kita.
+    unsafe {
+        let _ = GetCursorPos(&mut at);
+        let _ = ScreenToClient(hwnd, &mut at);
+        let _ = ReleaseCapture();
+    }
+    let scale = w.scale.get();
+    let position = LogicalPosition::new(at.x as f32 / scale, at.y as f32 / scale);
+    w.window.dispatch_event(WindowEvent::PointerReleased { position, button: PointerEventButton::Left });
+    w.window.dispatch_event(WindowEvent::PointerExited);
+    w.tracking_mouse.set(false);
+    moved
+}
+
+/// Isi clipboard untuk riwayat (lihat [`clipboard::read_for_history`]).
+pub fn clipboard_content() -> Option<clipboard::Content> {
+    clipboard::read_for_history(current_hwnd())
+}
+
+pub fn set_clipboard_image(image: &crate::image::Rgba, png: &[u8]) {
+    clipboard::set_image(current_hwnd(), image, png);
+}
+
+pub fn set_clipboard_text(text: &str) {
+    clipboard::set(current_hwnd(), text);
+}
+
+fn current_hwnd() -> Option<HWND> {
+    CURRENT.with(|c| c.borrow().upgrade()).and_then(|w| w.hwnd.get())
+}
+
+/// Menjadikan jendela aktif supaya klik di luar bisa terdeteksi.
+pub fn activate() {
+    if let Some(hwnd) = current_hwnd() {
+        // SAFETY: hwnd valid.
+        let _ = unsafe { SetForegroundWindow(hwnd) };
+    }
+}
+
+/// Menampilkan menu tray di posisi kursor; mengembalikan id item yang dipilih.
+/// Letak jendela di layar.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Placement {
+    /// Tengah atas monitor (mode bar).
+    TopCenter,
+    /// Kiri-atas jendela di titik ini, piksel fisik (mode ikon).
+    At(i32, i32),
+}
+
+fn current_window() -> Option<Rc<LayeredWindow>> {
+    CURRENT.with(|c| c.borrow().upgrade())
+}
+
+pub fn place(placement: Placement) {
+    if let Some(w) = current_window() {
+        if w.placement.replace(placement) != placement {
+            w.relayout();
+        }
+    }
+}
+
+/// Lebar monitor tempat jendela berada, dalam piksel logis.
+pub fn monitor_width() -> f32 {
+    let Some(w) = current_window() else { return 1536.0 };
+    let Some(hwnd) = w.hwnd.get() else { return 1536.0 };
+    let mut info = MONITORINFO { cbSize: size_of::<MONITORINFO>() as u32, ..Default::default() };
+    // SAFETY: hwnd valid, info milik kita.
+    unsafe {
+        let monitor = MonitorFromWindow(hwnd, MONITOR_DEFAULTTOPRIMARY);
+        let _ = GetMonitorInfoW(monitor, &mut info);
+    }
+    (info.rcMonitor.right - info.rcMonitor.left) as f32 / w.scale.get()
+}
+
+/// Skala layar jendela saat ini (1.25 = 125%).
+pub fn scale() -> f32 {
+    current_window().map_or(1.0, |w| w.scale.get())
+}
+
+pub fn cursor_pos() -> (i32, i32) {
+    let mut p = POINT::default();
+    // SAFETY: titik milik kita.
+    let _ = unsafe { GetCursorPos(&mut p) };
+    (p.x, p.y)
+}
+
+/// Area kerja (tanpa taskbar) monitor yang memuat titik ini.
+pub fn work_area_at(x: i32, y: i32) -> Rect {
+    let mut info = MONITORINFO { cbSize: size_of::<MONITORINFO>() as u32, ..Default::default() };
+    // SAFETY: info milik kita; MonitorFromPoint selalu mengembalikan monitor.
+    unsafe {
+        let monitor = MonitorFromPoint(POINT { x, y }, MONITOR_DEFAULTTONEAREST);
+        let _ = GetMonitorInfoW(monitor, &mut info);
+    }
+    let r = info.rcWork;
+    Rect { left: r.left, top: r.top, right: r.right, bottom: r.bottom }
+}
+
+pub fn set_topmost(on: bool) {
+    if let Some(w) = current_window() {
+        w.topmost.set(on);
+        w.relayout();
+    }
+}
+
+/// Sembunyikan tanpa mengubah status jendela Slint (mis. saat ada aplikasi layar penuh).
+pub fn set_hidden(hidden: bool) {
+    if let Some(hwnd) = current_hwnd() {
+        // SAFETY: hwnd valid.
+        unsafe {
+            let _ = ShowWindow(hwnd, if hidden { SW_HIDE } else { SW_SHOWNOACTIVATE });
+        }
+    }
+}
+
+/// Ada aplikasi layar penuh (video, game, presentasi) di depan.
+pub fn fullscreen_app_active() -> bool {
+    use windows::Win32::UI::Shell::{
+        SHQueryUserNotificationState, QUNS_BUSY, QUNS_PRESENTATION_MODE, QUNS_RUNNING_D3D_FULL_SCREEN,
+    };
+    // SAFETY: tanpa prasyarat.
+    unsafe { SHQueryUserNotificationState() }
+        .is_ok_and(|s| s == QUNS_BUSY || s == QUNS_RUNNING_D3D_FULL_SCREEN || s == QUNS_PRESENTATION_MODE)
+}
+
+pub fn show_menu(items: &[tray::MenuItem]) -> Option<u32> {
+    tray::menu(current_hwnd()?, items)
+}
 
 pub fn install() -> Result<(), PlatformError> {
-    // SAFETY: dipanggil sekali sebelum jendela apa pun dibuat. Gagal berarti
-    // sudah diatur lewat manifest; aman diabaikan.
+    // SAFETY: dipanggil sekali di thread UI sebelum jendela apa pun dibuat.
+    // DPI: gagal berarti sudah diatur lewat manifest; aman diabaikan.
+    // OLE (COM STA): dibutuhkan Core Audio dan drag & drop; berlaku sampai proses selesai.
     unsafe {
         let _ = SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
+        let _ = windows::Win32::System::Ole::OleInitialize(None);
     }
     slint::platform::set_platform(Box::new(WinPlatform::default()))
         .map_err(|e| PlatformError::Other(e.to_string()))
@@ -133,6 +321,16 @@ impl Platform for WinPlatform {
                 }
             }
         }
+    }
+
+    fn set_clipboard_text(&self, text: &str, clipboard: slint::platform::Clipboard) {
+        if clipboard == slint::platform::Clipboard::DefaultClipboard {
+            clipboard::set(current_hwnd(), text);
+        }
+    }
+
+    fn clipboard_text(&self, clipboard: slint::platform::Clipboard) -> Option<String> {
+        (clipboard == slint::platform::Clipboard::DefaultClipboard).then(|| clipboard::get(current_hwnd())).flatten()
     }
 
     fn new_event_loop_proxy(&self) -> Option<Box<dyn EventLoopProxy>> {
@@ -263,7 +461,16 @@ struct LayeredWindow {
     surface: RefCell<Option<Surface>>,
     dirty: Cell<bool>,
     tracking_mouse: Cell<bool>,
+    high_surrogate: Cell<Option<u16>>,
     frame_time: Cell<Duration>,
+    tray_icon: Cell<Option<HICON>>,
+    placement: Cell<Placement>,
+    topmost: Cell<bool>,
+    watchers: RefCell<Option<Watchers>>,
+    /// Laporan pertama tiap pengaturan daya hanya nilai awal; jangan diberitahukan.
+    power_seen: Cell<u8>,
+    /// Dikirim Explorer setelah restart; ikon tray harus ditambahkan ulang.
+    taskbar_created: u32,
 }
 
 impl LayeredWindow {
@@ -278,7 +485,15 @@ impl LayeredWindow {
             surface: RefCell::new(None),
             dirty: Cell::new(true),
             tracking_mouse: Cell::new(false),
+            high_surrogate: Cell::new(None),
             frame_time: Cell::new(Duration::from_millis(16)),
+            tray_icon: Cell::new(None),
+            placement: Cell::new(Placement::TopCenter),
+            topmost: Cell::new(true),
+            watchers: RefCell::new(None),
+            power_seen: Cell::new(0),
+            // SAFETY: tanpa prasyarat.
+            taskbar_created: unsafe { RegisterWindowMessageW(w!("TaskbarCreated")) },
         }))
     }
 
@@ -297,7 +512,10 @@ impl LayeredWindow {
             RegisterClassW(&class); // gagal bila sudah terdaftar; tidak masalah
 
             let hwnd = CreateWindowExW(
-                WS_EX_LAYERED | WS_EX_TOOLWINDOW | WS_EX_TOPMOST | WS_EX_NOACTIVATE,
+                // Tanpa WS_EX_NOACTIVATE: jendela harus bisa menjadi foreground
+                // supaya menu tray dan deteksi klik di luar panel bekerja.
+                // Klik biasa tetap tidak mencuri fokus (lihat WM_MOUSEACTIVATE).
+                WS_EX_LAYERED | WS_EX_TOOLWINDOW | WS_EX_TOPMOST,
                 w!("PatPetWindow"),
                 w!("PatPet"),
                 WS_POPUP,
@@ -314,6 +532,8 @@ impl LayeredWindow {
 
             self.scale.set(GetDpiForWindow(hwnd) as f32 / 96.0);
             self.frame_time.set(refresh_interval());
+            self.tray_icon.set(tray::add(hwnd));
+            *self.watchers.borrow_mut() = Some(Watchers::start(hwnd));
             Ok(hwnd)
         }
     }
@@ -340,18 +560,24 @@ impl LayeredWindow {
             self.window.dispatch_event(WindowEvent::Resized { size: self.logical.get() });
         }
 
-        // Tengah atas monitor tempat jendela berada.
-        let mut info = MONITORINFO { cbSize: size_of::<MONITORINFO>() as u32, ..Default::default() };
-        // SAFETY: hwnd valid, info milik kita.
-        unsafe {
-            let monitor = MonitorFromWindow(hwnd, MONITOR_DEFAULTTOPRIMARY);
-            let _ = GetMonitorInfoW(monitor, &mut info);
-        }
-        let RECT { left, top, right, .. } = info.rcMonitor;
-        let x = left + (right - left - size.width as i32) / 2;
+        let (x, y) = match self.placement.get() {
+            Placement::At(x, y) => (x, y),
+            Placement::TopCenter => {
+                // Tengah atas monitor tempat jendela berada.
+                let mut info = MONITORINFO { cbSize: size_of::<MONITORINFO>() as u32, ..Default::default() };
+                // SAFETY: hwnd valid, info milik kita.
+                unsafe {
+                    let monitor = MonitorFromWindow(hwnd, MONITOR_DEFAULTTOPRIMARY);
+                    let _ = GetMonitorInfoW(monitor, &mut info);
+                }
+                let RECT { left, top, right, .. } = info.rcMonitor;
+                (left + (right - left - size.width as i32) / 2, top)
+            }
+        };
+        let z = if self.topmost.get() { HWND_TOPMOST } else { HWND_NOTOPMOST };
         // SAFETY: hwnd valid.
         unsafe {
-            let _ = SetWindowPos(hwnd, Some(HWND_TOPMOST), x, top, 0, 0, SWP_NOSIZE | SWP_NOACTIVATE);
+            let _ = SetWindowPos(hwnd, Some(z), x, y, 0, 0, SWP_NOSIZE | SWP_NOACTIVATE);
         }
         self.dirty.set(true);
     }
@@ -363,6 +589,7 @@ impl LayeredWindow {
         self.scale.set(scale);
         self.window.dispatch_event(WindowEvent::ScaleFactorChanged { scale_factor: scale });
         self.relayout();
+        emit(Event::ScaleChanged(scale));
     }
 
     fn draw(&self) {
@@ -439,7 +666,109 @@ impl LayeredWindow {
                 let _ = unsafe { ReleaseCapture() };
                 WindowEvent::PointerReleased { position: self.position(lparam), button }
             }
+            WM_MOUSEWHEEL => {
+                // Posisi roda dalam koordinat layar; ubah ke koordinat jendela.
+                let mut at = POINT {
+                    x: (lparam.0 & 0xFFFF) as i16 as i32,
+                    y: ((lparam.0 >> 16) & 0xFFFF) as i16 as i32,
+                };
+                // SAFETY: hwnd valid, titik milik kita.
+                let _ = unsafe { ScreenToClient(hwnd, &mut at) };
+                let scale = self.scale.get();
+                let notches = ((wparam.0 >> 16) & 0xFFFF) as i16 as f32 / WHEEL_DELTA as f32;
+                WindowEvent::PointerScrolled {
+                    position: LogicalPosition::new(at.x as f32 / scale, at.y as f32 / scale),
+                    delta_x: 0.0,
+                    delta_y: notches * WHEEL_STEP,
+                }
+            }
             WM_MOUSEACTIVATE => return Some(LRESULT(MA_NOACTIVATE as isize)),
+            tray::WM_TRAY => {
+                match (lparam.0 & 0xFFFF) as u32 {
+                    tray::NIN_SELECT | tray::NIN_KEYSELECT => emit(Event::TrayClick),
+                    WM_CONTEXTMENU => emit(Event::TrayMenu),
+                    _ => {}
+                }
+                return Some(LRESULT(0));
+            }
+            WM_ACTIVATE => {
+                if (wparam.0 & 0xFFFF) as u32 == WA_INACTIVE {
+                    emit(Event::Deactivated);
+                }
+                return Some(LRESULT(0));
+            }
+            WM_KEYDOWN if wparam.0 == VK_ESCAPE.0 as usize => {
+                emit(Event::Escape);
+                return Some(LRESULT(0));
+            }
+            // Tombol non-teks (panah, Backspace, Enter, ...) dan pintasan Ctrl+huruf.
+            // Huruf biasa datang lewat WM_CHAR.
+            WM_KEYDOWN | WM_KEYUP => {
+                let vk = wparam.0 as u16;
+                // SAFETY: membaca status tombol thread ini.
+                let ctrl = unsafe { GetKeyState(VK_CONTROL.0 as i32) } < 0;
+                let text: slint::SharedString = match special_key(vk) {
+                    Some(key) => key.into(),
+                    // Ctrl+C/V/X/A/Z: WM_CHAR untuk ini berupa karakter kontrol, jadi kirim hurufnya.
+                    None if ctrl && (b'A' as u16..=b'Z' as u16).contains(&vk) => {
+                        char::from(vk as u8).to_ascii_lowercase().to_string().into()
+                    }
+                    None => return None,
+                };
+                if msg == WM_KEYDOWN {
+                    WindowEvent::KeyPressed { text }
+                } else {
+                    WindowEvent::KeyReleased { text }
+                }
+            }
+            // Tombol pengubah yang masih ditekan saat fokus pindah tidak akan
+            // pernah dilepas di sini; lepaskan supaya tidak "macet".
+            WM_KILLFOCUS => {
+                use slint::platform::Key;
+                for key in [Key::Control, Key::Shift] {
+                    self.window.dispatch_event(WindowEvent::KeyReleased { text: key.into() });
+                }
+                return Some(LRESULT(0));
+            }
+            WM_CHAR => {
+                let unit = wparam.0 as u16;
+                // Karakter di luar BMP datang sebagai dua surrogate berurutan.
+                let text = if (0xD800..0xDC00).contains(&unit) {
+                    self.high_surrogate.set(Some(unit));
+                    return Some(LRESULT(0));
+                } else if let Some(high) = self.high_surrogate.take() {
+                    String::from_utf16(&[high, unit]).ok()?
+                } else {
+                    char::from_u32(unit as u32).filter(|c| !c.is_control())?.to_string()
+                };
+                self.window.dispatch_event(WindowEvent::KeyPressed { text: text.as_str().into() });
+                WindowEvent::KeyReleased { text: text.into() }
+            }
+            WM_POWERBROADCAST => {
+                if wparam.0 == PBT_APMPOWERSTATUSCHANGE as usize {
+                    emit(Event::PowerChanged);
+                } else if wparam.0 == PBT_POWERSETTINGCHANGE as usize {
+                    self.power_setting(lparam);
+                }
+                return Some(LRESULT(1));
+            }
+            WM_CLIPBOARDUPDATE => {
+                emit(Event::ClipboardChanged);
+                return Some(LRESULT(0));
+            }
+            WM_CAPS => {
+                // SAFETY: membaca status tombol; dipanggil setelah Caps Lock dilepas.
+                let on = unsafe { GetKeyState(VK_CAPITAL.0 as i32) } & 1 == 1;
+                emit(Event::CapsLock(on));
+                return Some(LRESULT(0));
+            }
+            m if m == self.taskbar_created => {
+                if let Some(old) = self.tray_icon.take() {
+                    tray::remove(hwnd, old);
+                }
+                self.tray_icon.set(tray::add(hwnd));
+                return Some(LRESULT(0));
+            }
             WM_DPICHANGED => {
                 self.set_scale((wparam.0 & 0xFFFF) as f32 / 96.0);
                 return Some(LRESULT(0));
@@ -447,6 +776,7 @@ impl LayeredWindow {
             WM_DISPLAYCHANGE => {
                 self.frame_time.set(refresh_interval());
                 self.relayout();
+                emit(Event::DisplayChanged);
                 return Some(LRESULT(0));
             }
             _ => return None,
@@ -513,7 +843,11 @@ impl WindowAdapter for LayeredWindow {
 
 impl Drop for LayeredWindow {
     fn drop(&mut self) {
+        self.watchers.borrow_mut().take();
         if let Some(hwnd) = self.hwnd.take() {
+            if let Some(icon) = self.tray_icon.take() {
+                tray::remove(hwnd, icon);
+            }
             // SAFETY: jendela milik kita, dihancurkan sekali.
             unsafe {
                 let _ = DestroyWindow(hwnd);
@@ -529,6 +863,123 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
     }
     // SAFETY: penerusan standar ke prosedur bawaan.
     unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) }
+}
+
+// ---------------------------------------------------------------------------
+// Pemantau sistem: kecerahan, hemat baterai, Caps Lock
+
+/// Dikirim kait keyboard saat Caps Lock dilepas.
+const WM_CAPS: u32 = WM_APP + 3;
+const GUID_BRIGHTNESS: windows::core::GUID = windows::core::GUID::from_u128(0x8ffee2c6_2d01_46be_adb9_398addc5b4ff);
+const GUID_SAVER: windows::core::GUID = windows::core::GUID::from_u128(0xe00958c0_c213_4ace_ac77_fecced2eeea5);
+
+/// Langganan notifikasi daya, clipboard, seret & lepas, dan kait keyboard.
+/// Dilepas saat di-drop.
+struct Watchers {
+    hwnd: HWND,
+    power: Vec<windows::Win32::System::Power::HPOWERNOTIFY>,
+    hook: Option<HHOOK>,
+    clipboard: bool,
+    _drop_target: Option<dragdrop::Registration>,
+}
+
+impl Watchers {
+    fn start(hwnd: HWND) -> Self {
+        use windows::Win32::System::Power::RegisterPowerSettingNotification;
+        // SAFETY: hwnd valid; handle disimpan dan dilepas di Drop.
+        let power = [GUID_BRIGHTNESS, GUID_SAVER]
+            .iter()
+            .filter_map(|g| unsafe { RegisterPowerSettingNotification(HANDLE(hwnd.0), g, DEVICE_NOTIFY_WINDOW_HANDLE) }.ok())
+            .collect();
+        // Kait hanya melihat tombol Caps Lock; tombol lain langsung diteruskan.
+        // SAFETY: prosedur kait statis; dilepas di Drop.
+        let hook = unsafe {
+            GetModuleHandleW(None)
+                .ok()
+                .and_then(|m| SetWindowsHookExW(WH_KEYBOARD_LL, Some(caps_hook), Some(m.into()), 0).ok())
+        };
+        use windows::Win32::System::DataExchange::AddClipboardFormatListener;
+        // SAFETY: hwnd valid; dilepas di Drop.
+        let clipboard = unsafe { AddClipboardFormatListener(hwnd) }.is_ok();
+        let drop_target = dragdrop::register(hwnd, |on| emit(Event::DragHover(on)), |paths| emit(Event::FilesDropped(paths)));
+        Self { hwnd, power, hook, clipboard, _drop_target: drop_target }
+    }
+}
+
+impl Drop for Watchers {
+    fn drop(&mut self) {
+        use windows::Win32::System::Power::UnregisterPowerSettingNotification;
+        // SAFETY: handle dari `start`, dilepas sekali.
+        unsafe {
+            for h in self.power.drain(..) {
+                let _ = UnregisterPowerSettingNotification(h);
+            }
+            if let Some(hook) = self.hook.take() {
+                let _ = UnhookWindowsHookEx(hook);
+            }
+            if self.clipboard {
+                let _ = windows::Win32::System::DataExchange::RemoveClipboardFormatListener(self.hwnd);
+            }
+        }
+    }
+}
+
+extern "system" fn caps_hook(code: i32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
+    let up = matches!(wparam.0 as u32, WM_KEYUP | WM_SYSKEYUP);
+    if code >= 0 && up {
+        // SAFETY: untuk WH_KEYBOARD_LL, lparam menunjuk KBDLLHOOKSTRUCT yang valid.
+        let key = unsafe { &*(lparam.0 as *const KBDLLHOOKSTRUCT) };
+        if key.vkCode == VK_CAPITAL.0 as u32 {
+            if let Some(hwnd) = current_hwnd() {
+                // SAFETY: hanya mengirim pesan ke jendela kita sendiri.
+                let _ = unsafe { PostMessageW(Some(hwnd), WM_CAPS, WPARAM(0), LPARAM(0)) };
+            }
+        }
+    }
+    // SAFETY: meneruskan ke kait berikutnya sesuai aturan Windows.
+    unsafe { CallNextHookEx(None, code, wparam, lparam) }
+}
+
+impl LayeredWindow {
+    fn power_setting(&self, lparam: LPARAM) {
+        use windows::Win32::System::Power::POWERBROADCAST_SETTING;
+        // SAFETY: untuk PBT_POWERSETTINGCHANGE, lparam menunjuk POWERBROADCAST_SETTING
+        // yang datanya paling sedikit DataLength byte.
+        let (guid, value) = unsafe {
+            let s = &*(lparam.0 as *const POWERBROADCAST_SETTING);
+            if s.DataLength < 4 {
+                return;
+            }
+            (s.PowerSetting, std::ptr::read_unaligned(s.Data.as_ptr().cast::<u32>()))
+        };
+        let bit = if guid == GUID_BRIGHTNESS { 1 } else if guid == GUID_SAVER { 2 } else { return };
+        let seen = self.power_seen.get();
+        self.power_seen.set(seen | bit);
+        if seen & bit == 0 {
+            return; // nilai awal saat mendaftar, bukan perubahan
+        }
+        emit(if bit == 1 { Event::Brightness(value.min(100)) } else { Event::BatterySaver(value != 0) });
+    }
+}
+
+/// Tombol khusus Windows → tombol Slint. `None` untuk tombol yang tidak dipakai.
+fn special_key(vk: u16) -> Option<slint::platform::Key> {
+    use slint::platform::Key;
+    Some(match VIRTUAL_KEY(vk) {
+        VK_BACK => Key::Backspace,
+        VK_DELETE => Key::Delete,
+        VK_RETURN => Key::Return,
+        VK_TAB => Key::Tab,
+        VK_LEFT => Key::LeftArrow,
+        VK_RIGHT => Key::RightArrow,
+        VK_UP => Key::UpArrow,
+        VK_DOWN => Key::DownArrow,
+        VK_HOME => Key::Home,
+        VK_END => Key::End,
+        VK_SHIFT => Key::Shift,
+        VK_CONTROL => Key::Control,
+        _ => return None,
+    })
 }
 
 /// Durasi satu frame monitor utama, supaya animasi mengikuti refresh rate.

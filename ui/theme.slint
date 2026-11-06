@@ -1,33 +1,50 @@
 // Satu-satunya sumber nilai desain PatPet.
 // Komponen tidak boleh menulis warna, ukuran, atau durasi sendiri; ambil dari sini.
 //
-// Arah visual: permukaan hitam murni supaya bar menyatu dengan tepi layar
+// Arah visual: permukaan hitam murni supaya island menyatu dengan tepi layar
 // seperti notch. Warna lain diambil langsung dari palet sprite kucing, jadi
 // kucing tetap satu-satunya elemen yang menonjol.
 
+// Warna bisa diubah pengguna lewat patpet.conf; Rust mengisi semua nilai
+// ini saat aplikasi mulai dan setiap kali file itu disimpan. Nilai di sini
+// hanya dipakai untuk frame pertama dan harus sama dengan assets/default.conf.
 export global Palette {
     // Permukaan
-    out property <color> ink: #000000;          // bar dan tray
-    out property <color> raised: #171412;       // baris, kolom isian, chip
-    out property <color> raised-hover: #231F1C;
-    out property <color> line: #2B2623;         // pemisah tipis, garis waktu kosong
+    in-out property <color> ink: #000000;          // island dan panel
+    in-out property <color> raised: #171412;       // baris, kolom isian, chip
+    in-out property <color> raised-hover: #231F1C;
+    in-out property <color> line: #2B2623;         // pemisah tipis, garis waktu kosong
 
     // Teks
-    out property <color> text: #FEF5E6;         // krem dari bulu dada kucing
-    out property <color> muted: #A6988B;        // teks sekunder, abu hangat
-    out property <color> faint: #6E645C;        // petunjuk, placeholder
+    in-out property <color> text: #FEF5E6;         // krem dari bulu dada kucing
+    in-out property <color> muted: #A6988B;        // teks sekunder, abu hangat
+    in-out property <color> faint: #6E645C;        // petunjuk, placeholder
 
     // Aksen, masing-masing punya satu tugas
-    out property <color> accent: #FDD5B5;       // bulu kucing: aksi utama, tab aktif, charger
-    out property <color> on-accent: #1E1612;    // teks di atas aksen
-    out property <color> music: #7882C8;        // headphone: semua yang terkait musik
-    out property <color> alert: #E65A6E;        // hati: alarm, jatuh tempo, baterai lemah
+    in-out property <color> accent: #FDD5B5;       // bulu kucing: aksi utama, tab aktif
+    in-out property <color> on-accent: #1E1612;    // teks di atas aksen
+    in-out property <color> music: #7882C8;        // headphone: semua yang terkait musik
+    in-out property <color> alert: #E65A6E;        // hati: alarm, jatuh tempo, baterai lemah
+
+    // Detail: bawaannya mengikuti warna di atas
+    in-out property <color> battery: #FEF5E6;
+    in-out property <color> battery-charging: #FDD5B5;
+    in-out property <color> battery-low: #E65A6E;
+    in-out property <color> temp-hot: #E65A6E;
+    in-out property <color> timer-progress: #FDD5B5;
+    in-out property <color> music-progress: #7882C8;
+    in-out property <color> switch-on: #FDD5B5;
+    in-out property <color> focus-ring: #FDD5B5;
+    in-out property <color> due-overdue: #E65A6E;
+    in-out property <color> due-today: #FDD5B5;
+    in-out property <color> notice: #FDD5B5;
 }
 
 export global Type {
     out property <string> family: "Segoe UI Variable Text";
     out property <string> display: "Segoe UI Variable Display";
-    out property <string> icons: "Segoe Fluent Icons";
+    // Ada di Windows 10 dan 11, jadi ikon tampil sama di keduanya.
+    out property <string> icons: "Segoe MDL2 Assets";
 
     // Skala 11 / 13 / 16 / 24 / 40
     out property <length> caption: 11px;
@@ -60,13 +77,43 @@ export global Radius {
 
 export global Size {
     out property <length> bar-height: 34px;
-    out property <length> bar-width: 116px;     // tertutup: kucing + jam
-    out property <length> bar-width-wide: 300px; // saat hover
-    out property <length> tray-width: 420px;
-    out property <length> tray-height: 300px;
+    // Lebar island tertutup/melebar dan panel lebar dihitung dari lebar layar (Rust).
+    out property <length> timer-extra: 72px;    // tambahan lebar island saat timer berjalan
+    out property <length> peek: 4px;            // garis pemicu island tersembunyi
+    out property <length> notice-height: 54px;  // island saat notifikasi berisi dua baris
+    out property <length> notice-badge: 24px;   // lingkaran ikon notifikasi
+    out property <length> level-width: 72px;    // garis level volume/kecerahan
+    out property <length> tray-width: 420px;    // panel Waktu
+    out property <length> tray-height: 236px;   // tinggi panel di bawah bar, termasuk tab
     out property <length> pet: 32px;            // satu frame sprite 32x32
     out property <length> icon: 14px;
+    out property <length> icon-small: 11px;     // ikon status di bar
+    out property <length> battery-width: 22px;
+    out property <length> battery-height: 11px;
     out property <length> hit: 28px;            // area klik minimum tombol ikon
+    out property <length> hit-primary: 34px;    // tombol aksi utama (putar/jeda)
+    out property <length> tab-height: 24px;
+    out property <length> cover: 56px;          // cover album di tab Musik
+    out property <length> player-width: 132px;  // kolom pemutar di kiri lirik
+    out property <length> track: 4px;           // tebal garis waktu
+    out property <length> knob: 10px;           // pegangan garis waktu
+    out property <length> chip-height: 24px;
+    out property <length> arrow-height: 20px;   // panah naik/turun angka timer
+    out property <length> digit-width: 64px;    // satu kolom angka timer
+    out property <length> digit-height: 48px;
+    out property <length> switch-width: 30px;
+    out property <length> switch-height: 16px;
+    out property <length> field-height: 30px;   // kolom teks
+    out property <length> checkbox: 16px;
+    out property <length> wheel-row: 22px;       // satu angka pada roda jam/menit
+    out property <length> wheel-width: 52px;
+    out property <length> calendar-width: 252px; // 7 kolom tanggal
+    out property <length> calendar-cell: 21px;   // tinggi satu baris tanggal
+    out property <length> shelf-card: 84px;      // kartu file di Shelf (persegi)
+    out property <length> shelf-thumb: 36px;     // gambar kecil file
+    out property <length> clip-width: 150px;     // kartu riwayat clipboard
+    out property <length> clip-height: 40px;
+    out property <length> close-hit: 20px;       // tombol bulat kecil di atas kartu
 }
 
 export global Motion {
@@ -74,4 +121,6 @@ export global Motion {
     out property <duration> quick: 120ms;       // hover, tekan
     out property <duration> move: 220ms;        // bar melebar, tray, pindah tab
     out property <easing> ease: cubic-bezier(0.2, 0.8, 0.2, 1);
+    out property <duration> tip-delay: 600ms;  // jeda sebelum keterangan hover muncul
+    out property <duration> tip-hide: 4s;      // keterangan hilang sendiri setelah ini
 }

@@ -1,0 +1,247 @@
+import { Palette, Type, Space, Radius, Size } from "theme.slint";
+import { IconButton, PrimaryButton, PillButton, Toggle, ArrowButton, NumberField, Icon } from "parts.slint";
+
+export enum TimerState { idle, running, paused }
+
+export struct TimerView {
+    state: TimerState,
+    remaining: string,
+    // 0–1
+    progress: float,
+    // "Selesai pukul 14:30" atau "Dijeda"
+    status: string,
+    // Durasi total putaran ini, mis. "25:00"
+    total: string,
+}
+
+// Satu kolom angka (jam, menit, atau detik) dengan panah dan label.
+component Segment {
+    in-out property <int> value;
+    in property <int> max;
+    in property <string> label;
+    callback submit();
+
+    VerticalLayout {
+        alignment: center;
+
+        ArrowButton {
+            glyph: Icon.up;
+            clicked => { field.bump(1); }
+        }
+
+        field := NumberField {
+            tip: "Klik lalu ketik angka, atau gulir mouse";
+            width: Size.digit-width;
+            height: Size.digit-height;
+            value <=> root.value;
+            max: root.max;
+            submit => { root.submit(); }
+        }
+
+        ArrowButton {
+            glyph: Icon.down;
+            clicked => { field.bump(-1); }
+        }
+
+        Text {
+            text: root.label;
+            font-size: Type.caption;
+            color: Palette.muted;
+            horizontal-alignment: center;
+        }
+    }
+}
+
+component Colon inherits Text {
+    text: ":";
+    font-family: Type.display;
+    font-size: Type.headline;
+    color: Palette.faint;
+    vertical-alignment: center;
+}
+
+// Isi tab Timer: atur durasi, timer berjalan, atau alarm berbunyi.
+export component TimerPanel {
+    in property <TimerView> timer;
+    in property <bool> ringing;
+    in-out property <bool> alarm-enabled: true;
+    in-out property <int> hours;
+    in-out property <int> minutes: 25;
+    in-out property <int> seconds;
+    callback start(int);
+    callback pause-resume();
+    callback stop();
+    callback stop-alarm();
+
+    pure function total() -> int {
+        return root.hours * 3600 + root.minutes * 60 + root.seconds;
+    }
+
+    function try-start() {
+        if (root.total() > 0) {
+            root.start(root.total());
+        }
+    }
+
+    if root.ringing: VerticalLayout {
+        alignment: center;
+        spacing: Space.sm;
+
+        Text {
+            text: Icon.alarm;
+            font-family: Type.icons;
+            font-size: Type.headline;
+            color: Palette.alert;
+            horizontal-alignment: center;
+        }
+
+        Text {
+            text: "Waktu habis";
+            font-family: Type.display;
+            font-size: Type.headline;
+            font-weight: Type.semibold;
+            color: Palette.text;
+            horizontal-alignment: center;
+        }
+
+        Text {
+            text: "Timer " + root.timer.total + " selesai";
+            color: Palette.muted;
+            horizontal-alignment: center;
+        }
+
+        HorizontalLayout {
+            alignment: center;
+            padding-top: Space.sm;
+
+            PillButton {
+                text: "Matikan alarm";
+                clicked => { root.stop-alarm(); }
+            }
+        }
+    }
+
+    if !root.ringing && root.timer.state == TimerState.idle: VerticalLayout {
+        padding: Space.lg;
+        padding-top: Space.sm;
+        spacing: Space.md;
+        alignment: center;
+
+        HorizontalLayout {
+            alignment: center;
+            spacing: Space.xs;
+
+            Segment {
+                label: "jam";
+                max: 23;
+                value <=> root.hours;
+                submit => { root.try-start(); }
+            }
+
+            Colon { }
+
+            Segment {
+                label: "menit";
+                max: 59;
+                value <=> root.minutes;
+                submit => { root.try-start(); }
+            }
+
+            Colon { }
+
+            Segment {
+                label: "detik";
+                max: 59;
+                value <=> root.seconds;
+                submit => { root.try-start(); }
+            }
+        }
+
+        HorizontalLayout {
+            spacing: Space.md;
+
+            Toggle {
+                horizontal-stretch: 0;
+                text: "Bunyikan alarm";
+                checked <=> root.alarm-enabled;
+            }
+
+            Rectangle {
+                horizontal-stretch: 1;
+            }
+
+            PrimaryButton {
+                glyph: Icon.play;
+                tip: "Mulai timer";
+                opacity: root.total() > 0 ? 1 : 0.4;
+                clicked => { root.try-start(); }
+            }
+        }
+    }
+
+    if !root.ringing && root.timer.state != TimerState.idle: VerticalLayout {
+        alignment: center;
+        padding: Space.lg;
+        spacing: Space.sm;
+
+        Text {
+            text: root.timer.status;
+            color: Palette.muted;
+            horizontal-alignment: center;
+        }
+
+        Text {
+            text: root.timer.remaining;
+            font-family: Type.display;
+            font-size: Type.hero;
+            font-weight: Type.semibold;
+            color: root.timer.state == TimerState.paused ? Palette.muted : Palette.text;
+            horizontal-alignment: center;
+        }
+
+        HorizontalLayout {
+            alignment: center;
+
+            Rectangle {
+                width: Size.tray-width / 2;
+                height: Size.track;
+                border-radius: self.height / 2;
+                background: Palette.line;
+
+                Rectangle {
+                    x: 0;
+                    width: parent.width * root.timer.progress;
+                    border-radius: self.height / 2;
+                    background: Palette.timer-progress;
+                }
+            }
+        }
+
+        HorizontalLayout {
+            alignment: center;
+            spacing: Space.md;
+            padding-top: Space.xs;
+
+            VerticalLayout {
+                alignment: center;
+
+                IconButton {
+                    glyph: Icon.stop;
+                    tip: "Hentikan timer";
+                    clicked => { root.stop(); }
+                }
+            }
+
+            PrimaryButton {
+                glyph: root.timer.state == TimerState.running ? Icon.pause : Icon.play;
+                tip: root.timer.state == TimerState.running ? "Jeda timer" : "Lanjutkan timer";
+                clicked => { root.pause-resume(); }
+            }
+
+            // Penyeimbang supaya tombol utama tepat di tengah.
+            Rectangle {
+                width: Size.hit;
+            }
+        }
+    }
+}

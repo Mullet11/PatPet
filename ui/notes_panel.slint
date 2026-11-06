@@ -1,0 +1,481 @@
+import { Palette, Type, Space, Radius, Size, Motion } from "theme.slint";
+import { IconButton, Chip, PillButton, TextField, TimeWheel, HoverTip, Icon } from "parts.slint";
+
+export enum Due { none, done, overdue, today, soon, later }
+
+// Satu kotak tanggal di kalender pemilih deadline.
+export struct CalendarDay {
+    label: string,
+    // Hari sejak 1970-01-01; dikirim balik saat tanggal diklik.
+    key: int,
+    in-month: bool,
+    today: bool,
+    selected: bool,
+}
+
+export struct NoteRow {
+    id: int,
+    text: string,
+    done: bool,
+    pinned: bool,
+    // "Besok 09:00"; kosong bila tanpa deadline
+    deadline: string,
+    due: Due,
+}
+
+component Checkbox inherits Rectangle {
+    in property <bool> checked;
+    callback toggled();
+
+    width: Size.checkbox;
+    height: Size.checkbox;
+    border-radius: Radius.control / 2;
+    border-width: 1px;
+    border-color: root.checked ? Palette.accent : touch.has-hover ? Palette.text : Palette.muted;
+    background: root.checked ? Palette.accent : transparent;
+    animate background { duration: Motion.quick; easing: Motion.ease; }
+
+    HoverTip {
+        text: root.checked ? "Tandai belum selesai" : "Tandai selesai";
+        active: touch.has-hover;
+    }
+
+    if root.checked: Text {
+        text: Icon.check;
+        font-family: Type.icons;
+        font-size: Size.icon-small;
+        color: Palette.on-accent;
+    }
+
+    touch := TouchArea {
+        clicked => { root.toggled(); }
+    }
+}
+
+component NoteItem inherits Rectangle {
+    in property <NoteRow> note;
+    callback toggle-done();
+    callback toggle-pin();
+    callback remove();
+    callback edited(string);
+    callback pick-deadline();
+
+    pure function due-color(d: Due) -> color {
+        if (d == Due.overdue) { return Palette.due-overdue; }
+        if (d == Due.today) { return Palette.due-today; }
+        if (d == Due.soon) { return Palette.text; }
+        if (d == Due.done) { return Palette.faint; }
+        return Palette.muted;
+    }
+
+    border-radius: Radius.row;
+    background: hover.has-hover || input.has-focus ? Palette.raised : transparent;
+
+    // Kotak sentuh membungkus isi baris supaya tetap tahu kursor ada di atas
+    // catatan meski kursor berada di atas kolom teks.
+    min-height: row.min-height;
+    preferred-height: row.preferred-height;
+
+    hover := TouchArea {
+        row := HorizontalLayout {
+            padding: Space.sm;
+            spacing: Space.sm;
+
+            VerticalLayout {
+                padding-top: 1px;
+                alignment: start;
+
+                Checkbox {
+                    checked: root.note.done;
+                    toggled => { root.toggle-done(); }
+                }
+            }
+
+            VerticalLayout {
+                horizontal-stretch: 1;
+                spacing: Space.xs;
+
+                input := TextInput {
+                    text: root.note.text;
+                    wrap: word-wrap;
+                    single-line: false;
+                    color: root.note.done ? Palette.faint : Palette.text;
+                    selection-background-color: Palette.line;
+                    selection-foreground-color: Palette.text;
+                    edited => { root.edited(self.text); }
+                }
+
+                if root.note.deadline != "": HorizontalLayout {
+                    alignment: start;
+                    spacing: Space.xs;
+
+                    Text {
+                        text: Icon.calendar;
+                        font-family: Type.icons;
+                        font-size: Size.icon-small;
+                        color: root.due-color(root.note.due);
+                        vertical-alignment: center;
+                    }
+
+                    Text {
+                        text: root.note.deadline;
+                        font-size: Type.caption;
+                        color: root.due-color(root.note.due);
+
+                        TouchArea {
+                            clicked => { root.pick-deadline(); }
+                        }
+                    }
+                }
+            }
+
+            // Sematan selalu terlihat bila aktif; aksi lain muncul saat kursor di atas catatan.
+            if root.note.pinned || hover.has-hover: VerticalLayout {
+                alignment: start;
+
+                IconButton {
+                    glyph: Icon.pin;
+                    tip: root.note.pinned ? "Lepas sematan" : "Sematkan di atas";
+                    opacity: root.note.pinned ? 1 : 0.6;
+                    clicked => { root.toggle-pin(); }
+                }
+            }
+
+            if hover.has-hover && root.note.deadline == "": VerticalLayout {
+                alignment: start;
+
+                IconButton {
+                    glyph: Icon.calendar;
+                    tip: "Atur deadline";
+                    clicked => { root.pick-deadline(); }
+                }
+            }
+
+            if hover.has-hover: VerticalLayout {
+                alignment: start;
+
+                IconButton {
+                    glyph: Icon.delete;
+                    tip: "Hapus catatan";
+                    clicked => { root.remove(); }
+                }
+            }
+        }
+    }
+}
+
+// Isi tab Catatan: cari, tulis baru, daftar, batalkan hapus, dan pemilih deadline.
+export component NotesPanel {
+    in property <[NoteRow]> notes;
+    in-out property <string> search;
+    in-out property <string> draft;
+    // Deadline untuk catatan baru; kosong bila belum dipilih.
+    in property <string> draft-deadline;
+    in property <int> overdue;
+    in property <bool> can-undo;
+    in property <bool> picking;
+    in property <string> picker-month;
+    in property <[CalendarDay]> picker-days;
+    // Tanggal terpilih, mis. "Sen, 9 Nov"
+    in property <string> picker-date;
+    in-out property <int> picker-hour;
+    in-out property <int> picker-minute;
+    callback search-edited(string);
+    callback add();
+    callback toggle-done(int);
+    callback toggle-pin(int);
+    callback remove(int);
+    callback edited(int, string);
+    callback undo();
+    // -1 = catatan baru
+    callback pick-deadline(int);
+    // 0 hari ini, 1 besok, 2 minggu depan
+    // Geser bulan yang ditampilkan: -1 atau 1.
+    callback picker-month-shift(int);
+    callback picker-pick-day(int);
+    callback picker-save();
+    callback picker-clear();
+    callback picker-cancel();
+
+    VerticalLayout {
+        padding: Space.lg;
+        padding-top: Space.sm;
+        spacing: Space.sm;
+
+        HorizontalLayout {
+            spacing: Space.sm;
+
+            TextField {
+                glyph: Icon.search;
+                placeholder: "Cari catatan";
+                text <=> root.search;
+                edited(t) => { root.search-edited(t); }
+            }
+
+            if root.overdue > 0: Rectangle {
+                border-radius: Radius.control;
+                background: Palette.raised;
+
+                HorizontalLayout {
+                    padding-left: Space.sm;
+                    padding-right: Space.sm;
+
+                    Text {
+                        text: root.overdue + " lewat";
+                        font-size: Type.caption;
+                        font-weight: Type.semibold;
+                        color: Palette.alert;
+                        vertical-alignment: center;
+                    }
+                }
+            }
+        }
+
+        HorizontalLayout {
+            spacing: Space.sm;
+
+            TextField {
+                placeholder: "Tulis catatan baru, lalu Enter";
+                text <=> root.draft;
+                accepted => { root.add(); }
+            }
+
+            if root.draft-deadline != "": Text {
+                text: root.draft-deadline;
+                font-size: Type.caption;
+                color: Palette.accent;
+                vertical-alignment: center;
+            }
+
+            VerticalLayout {
+                alignment: center;
+
+                IconButton {
+                    glyph: Icon.calendar;
+                    tip: root.draft-deadline != "" ? "Ubah deadline" : "Pilih deadline";
+                    clicked => { root.pick-deadline(-1); }
+                }
+            }
+
+            VerticalLayout {
+                alignment: center;
+
+                IconButton {
+                    glyph: Icon.add;
+                    tip: "Tambah catatan";
+                    enabled: root.draft != "";
+                    clicked => { root.add(); }
+                }
+            }
+        }
+
+        Rectangle {
+            vertical-stretch: 1;
+            clip: true;
+
+            if root.notes.length == 0: Text {
+                text: root.search != "" ? "Tidak ada catatan yang cocok" : "Belum ada catatan. Tulis di atas lalu tekan Enter.";
+                color: Palette.muted;
+                wrap: word-wrap;
+                horizontal-alignment: center;
+                width: parent.width - 2 * Space.xl;
+            }
+
+            Flickable {
+                content-height: list.preferred-height;
+
+                list := VerticalLayout {
+                    alignment: start;
+
+                    for note in root.notes: NoteItem {
+                        note: note;
+                        toggle-done => { root.toggle-done(note.id); }
+                        toggle-pin => { root.toggle-pin(note.id); }
+                        remove => { root.remove(note.id); }
+                        edited(t) => { root.edited(note.id, t); }
+                        pick-deadline => { root.pick-deadline(note.id); }
+                    }
+                }
+            }
+
+            if root.can-undo: Rectangle {
+                y: parent.height - self.height;
+                height: Size.hit + Space.sm;
+                border-radius: Radius.row;
+                background: Palette.raised;
+
+                HorizontalLayout {
+                    padding-left: Space.md;
+                    padding-right: Space.md;
+
+                    Text {
+                        text: "Catatan dihapus";
+                        color: Palette.text;
+                        vertical-alignment: center;
+                        horizontal-stretch: 1;
+                    }
+
+                    Text {
+                        text: "Batalkan";
+                        font-weight: Type.semibold;
+                        color: undo.has-hover ? Palette.text : Palette.accent;
+                        vertical-alignment: center;
+
+                        undo := TouchArea {
+                            clicked => { root.undo(); }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Pemilih deadline menutupi seluruh halaman selama terbuka:
+    // kalender bulanan di kiri, roda jam dan menit di kanan.
+    if root.picking: Rectangle {
+        background: Palette.ink;
+
+        TouchArea { } // jangan teruskan klik ke daftar di bawahnya
+
+        HorizontalLayout {
+            padding: Space.lg;
+            padding-top: Space.sm;
+            padding-bottom: Space.sm;
+            spacing: Space.xl;
+
+            VerticalLayout {
+                width: Size.calendar-width;
+                spacing: Space.xs;
+
+                HorizontalLayout {
+                    Text {
+                        text: root.picker-month;
+                        font-size: Type.title;
+                        font-weight: Type.semibold;
+                        color: Palette.text;
+                        vertical-alignment: center;
+                        horizontal-stretch: 1;
+                    }
+
+                    IconButton {
+                        glyph: Icon.left;
+                        tip: "Bulan sebelumnya";
+                        clicked => { root.picker-month-shift(-1); }
+                    }
+
+                    IconButton {
+                        glyph: Icon.right;
+                        tip: "Bulan berikutnya";
+                        clicked => { root.picker-month-shift(1); }
+                    }
+                }
+
+                HorizontalLayout {
+                    for name in ["Sen", "Sel", "Rab", "Kam", "Jum", "Sab", "Min"]: Text {
+                        width: Size.calendar-width / 7;
+                        text: name;
+                        font-size: Type.caption;
+                        color: Palette.faint;
+                        horizontal-alignment: center;
+                    }
+                }
+
+                Rectangle {
+                    height: Size.calendar-cell * 6;
+
+                    for day[i] in root.picker-days: Rectangle {
+                        x: Math.mod(i, 7) * Size.calendar-width / 7;
+                        y: Math.floor(i / 7) * Size.calendar-cell;
+                        width: Size.calendar-width / 7;
+                        height: Size.calendar-cell;
+
+                        Rectangle {
+                            width: Size.calendar-cell;
+                            height: Size.calendar-cell;
+                            border-radius: self.width / 2;
+                            background: day.selected ? Palette.accent : cell.has-hover ? Palette.raised-hover : transparent;
+                            border-width: day.today && !day.selected ? 1px : 0;
+                            border-color: Palette.accent;
+                        }
+
+                        Text {
+                            text: day.label;
+                            font-size: Type.caption;
+                            font-weight: day.selected ? Type.semibold : Type.regular;
+                            color: day.selected ? Palette.on-accent : day.in-month ? Palette.text : Palette.faint;
+                        }
+
+                        cell := TouchArea {
+                            clicked => { root.picker-pick-day(day.key); }
+                        }
+                    }
+                }
+            }
+
+            VerticalLayout {
+                horizontal-stretch: 1;
+                spacing: Space.sm;
+
+                HorizontalLayout {
+                    alignment: center;
+                    spacing: Space.sm;
+
+                    TimeWheel {
+                        tip: "Jam: gulir, seret, atau klik angkanya";
+                        max: 23;
+                        value <=> root.picker-hour;
+                    }
+
+                    Text {
+                        text: ":";
+                        font-size: Type.title;
+                        color: Palette.faint;
+                        vertical-alignment: center;
+                    }
+
+                    TimeWheel {
+                        tip: "Menit: gulir, seret, atau klik angkanya";
+                        max: 59;
+                        value <=> root.picker-minute;
+                    }
+                }
+
+                Text {
+                    text: root.picker-date + " · " + (root.picker-hour < 10 ? "0" : "") + root.picker-hour
+                        + ":" + (root.picker-minute < 10 ? "0" : "") + root.picker-minute;
+                    color: Palette.accent;
+                    horizontal-alignment: center;
+                }
+
+                Rectangle {
+                    vertical-stretch: 1;
+                }
+
+                HorizontalLayout {
+                    spacing: Space.sm;
+
+                    Chip {
+                        text: "Batal";
+                        subtle: true;
+                        clicked => { root.picker-cancel(); }
+                    }
+
+                    Chip {
+                        text: "Hapus deadline";
+                        subtle: true;
+                        clicked => { root.picker-clear(); }
+                    }
+
+                    Rectangle {
+                        horizontal-stretch: 1;
+                    }
+
+                    PillButton {
+                        text: "Simpan";
+                        clicked => { root.picker-save(); }
+                    }
+                }
+            }
+        }
+    }
+}

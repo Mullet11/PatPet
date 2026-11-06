@@ -1,80 +1,565 @@
 import { Palette, Type, Space, Radius, Size, Motion } from "theme.slint";
 import { Pet, Mood } from "pet.slint";
+import { Battery, Icon, Power, Tabs, NoticeView, HoverTip, TooltipView } from "parts.slint";
+import { ClockPanel, Weather } from "clock_panel.slint";
+import { MusicPanel, NowPlaying, LyricsMode, LyricLine } from "music_panel.slint";
+import { TimerPanel, TimerView, TimerState } from "timer_panel.slint";
+import { NotesPanel, NoteRow, Due, CalendarDay } from "notes_panel.slint";
+import { ShelfPanel, ShelfItem, ClipItem } from "shelf_panel.slint";
 
-export { Mood }
+export { Mood, Power, Weather, NowPlaying, LyricsMode, LyricLine, TimerView, TimerState, NoteRow, Due, CalendarDay, ShelfItem, ClipItem, Palette, NoticeView }
 
-// Jendela berukuran tetap seluas bar saat melebar. Piksel transparan
-// tidak menangkap klik, jadi area di luar bar tembus ke desktop.
+// Jendela berukuran tetap seluas panel terbuka. Piksel transparan tidak
+// menangkap klik, jadi area di luar bentuk hitam tembus ke desktop.
+//
+// Mode bar: bar dan panel adalah satu bentuk hitam yang tumbuh ke bawah,
+// supaya panel terasa keluar dari bar, bukan jendela terpisah.
+// Mode ikon: hanya kucing; panel muncul di bawah atau di atasnya.
 export component AppWindow inherits Window {
+    in property <float> device-scale: 1;
     in property <string> time;
     in property <string> date;
+    in property <string> greeting;
+    in property <string> zone;
     in property <Mood> mood;
     in property <int> generation;
+    in property <Weather> weather;
+    in property <Power> power;
+    // Suhu laptop dalam °C; 0 bila sensor tidak tersedia.
+    in property <int> cpu-temp;
+    // Notifikasi yang sedang tampil di island.
+    in property <NoticeView> notice;
+    in property <bool> open;
+    // Lebar proporsional terhadap layar, dihitung di Rust.
+    in property <length> island-closed: 230px;
+    in property <length> island-wide: 370px;
+    in property <length> panel-wide: 580px;
+    // Island naik keluar layar dan muncul saat kursor menyentuh tepi atas.
+    in property <bool> auto-hide;
+    in-out property <int> tab;
+    in property <NowPlaying> now;
+    in property <image> cover;
+    in property <bool> has-cover;
+    in property <LyricsMode> lyrics-mode;
+    in property <[LyricLine]> lyric-lines;
+    in property <int> lyric-current: -1;
+    in property <bool> has-tint;
+    in property <color> tint;
+    in property <color> tint-card;
+    in property <string> lyrics-plain;
+    in property <string> lyrics-status;
+    in property <TimerView> timer;
+    in property <bool> ringing;
+    in-out property <bool> alarm-enabled: true;
+    in-out property <int> timer-hours;
+    in-out property <int> timer-minutes: 25;
+    in-out property <int> timer-seconds;
+    in property <[NoteRow]> notes;
+    in-out property <string> note-search;
+    in-out property <string> note-draft;
+    in property <string> note-draft-deadline;
+    in property <int> notes-overdue;
+    in property <bool> can-undo;
+    in property <bool> picking;
+    in property <string> picker-date;
+    in property <string> picker-month;
+    in property <[CalendarDay]> picker-days;
+    in-out property <int> picker-hour;
+    in-out property <int> picker-minute;
+    in property <[ShelfItem]> shelf-items;
+    in property <[ClipItem]> clips;
+    in property <bool> drop-hover;
+    in property <bool> icon-mode;
+    // Ukuran ikon kucing pada mode ikon: 1, 2, atau 3 kali sprite.
+    in property <int> pet-scale: 2;
+    // Posisi kucing di dalam jendela pada mode ikon.
+    in property <length> pet-x;
+    in property <length> pet-y;
+    in property <bool> panel-below: true;
+    callback toggle();
+    callback tab-changed();
+    callback play-pause();
+    callback next();
+    callback previous();
+    callback seek(float);
+    callback seek-to(float);
+    callback timer-start(int);
+    callback timer-pause-resume();
+    callback timer-stop();
+    callback stop-alarm();
+    callback note-search-edited(string);
+    callback note-add();
+    callback note-toggle-done(int);
+    callback note-toggle-pin(int);
+    callback note-remove(int);
+    callback note-edited(int, string);
+    callback note-undo();
+    callback note-pick-deadline(int);
+    callback picker-month-shift(int);
+    callback picker-pick-day(int);
+    callback picker-save();
+    callback picker-clear();
+    callback picker-cancel();
+    callback shelf-open(int);
+    callback shelf-remove(int);
+    callback shelf-drag(int);
+    callback screenshot();
+    callback clip-copy(int);
+    callback clip-keep(int);
+    callback clips-clear();
+    callback drag-start();
+    callback drag-move();
+    // Klik kanan island atau kucing: buka patpet.conf.
+    callback open-config();
     callback pet-clicked();
     callback pet-finished();
-    callback quit();
+    callback refresh-weather();
 
     no-frame: true;
     background: transparent;
-    width: Size.bar-width-wide;
-    height: Size.bar-height;
+    width: root.panel-wide;
+    height: root.icon-mode ? root.icon-size + Space.sm + Size.tray-height : Size.notice-height + Size.tray-height;
     default-font-family: Type.family;
     default-font-size: Type.body;
 
-    property <bool> wide: touch.has-hover;
+    property <bool> wide: root.open || root.notice.active || touch.has-hover;
+    // Tinggi baris island: lebih tinggi saat notifikasi punya isi.
+    property <length> row-height: root.notice.active && root.notice.body != "" ? Size.notice-height : Size.bar-height;
+    // Mode ikon: notifikasi tampil di tempat panel saat panel tertutup.
+    property <bool> icon-notice: root.icon-mode && root.notice.active && !root.open;
+    property <color> tone-color: root.notice.alert ? Palette.alert : Palette.notice;
+    property <bool> counting: root.timer.state != TimerState.idle;
+    property <bool> hot: root.cpu-temp >= 80;
+    // Panel Waktu tetap; tab lain lebih lebar.
+    property <length> panel-width: root.tab == 0 ? Size.tray-width : root.panel-wide;
+    property <bool> revealed: root.icon-mode || !root.auto-hide || root.wide || peek.has-hover;
+    property <length> hide-offset: root.revealed ? 0 : -Size.bar-height;
+    animate hide-offset { duration: Motion.move; easing: Motion.ease; }
+    // Sama dengan ukuran komponen Pet: dibulatkan ke kelipatan piksel utuh.
+    property <length> icon-size: Size.pet * Math.max(1, Math.round(root.pet-scale * root.device-scale)) / root.device-scale;
+
+    // Garis pemicu di tepi atas saat island tersembunyi. Hampir transparan,
+    // tapi tidak nol, supaya Windows tetap mengirim gerakan kursor ke sini.
+    peek := TouchArea {
+        visible: root.auto-hide && !root.icon-mode;
+        x: (root.width - root.island-closed) / 2;
+        y: 0;
+        width: root.island-closed;
+        height: Size.peek;
+
+        Rectangle {
+            background: Palette.ink.with-alpha(0.02);
+        }
+    }
 
     Rectangle {
-        x: (root.width - self.width) / 2;
-        y: 0;
-        width: root.wide ? Size.bar-width-wide : Size.bar-width;
-        height: Size.bar-height;
-        animate width { duration: Motion.move; easing: Motion.ease; }
+        x: root.icon-mode
+            ? Math.clamp(root.pet-x + root.icon-size / 2 - self.width / 2, 0, root.width - self.width)
+            : (root.width - self.width) / 2;
+        y: !root.icon-mode ? root.hide-offset
+            : root.panel-below ? root.pet-y + root.icon-size + Space.sm
+            : root.pet-y - Space.sm - self.height;
+        width: root.icon-notice ? root.island-wide
+            : root.icon-mode || root.open ? root.panel-width
+            : root.wide ? root.island-wide
+            : root.counting ? root.island-closed + Size.timer-extra
+            : root.island-closed;
+        height: root.icon-mode ? (root.open ? Size.tray-height : root.icon-notice ? root.row-height : 0)
+            : root.open ? root.row-height + Size.tray-height
+            : root.notice.active ? root.row-height
+            : Size.bar-height;
+        border-top-left-radius: root.icon-mode ? Radius.tray : 0;
+        border-top-right-radius: self.border-top-left-radius;
+        border-bottom-left-radius: root.icon-mode || root.open ? Radius.tray : Radius.bar;
+        border-bottom-right-radius: self.border-bottom-left-radius;
+        animate width, height, border-bottom-left-radius { duration: Motion.move; easing: Motion.ease; }
         background: Palette.ink;
-        border-bottom-left-radius: Radius.bar;
-        border-bottom-right-radius: Radius.bar;
         clip: true;
 
-        touch := TouchArea {
-            clicked => { root.pet-clicked(); }
-            // Sementara sampai ikon tray ada di fase 1.
-            pointer-event(e) => {
-                if (e.kind == PointerEventKind.up && e.button == PointerEventButton.right) {
-                    root.quit();
+        // Baris island: isi biasa, atau notifikasi bila ada.
+        Rectangle {
+            y: 0;
+            height: root.icon-mode && !root.icon-notice ? 0 : root.row-height;
+            visible: !root.icon-mode || root.icon-notice;
+
+            HoverTip {
+                text: root.notice.active ? "" : root.open ? "Klik untuk menutup panel" : "Klik untuk membuka panel · klik kanan untuk pengaturan";
+                active: touch.has-hover;
+            }
+
+            touch := TouchArea {
+                clicked => { root.toggle(); }
+                pointer-event(e) => {
+                    if (e.kind == PointerEventKind.up && e.button == PointerEventButton.right) {
+                        root.open-config();
+                    }
+                }
+            }
+
+            if root.notice.active: HorizontalLayout {
+                padding-left: Space.sm;
+                padding-right: Space.md;
+                spacing: Space.sm;
+
+                VerticalLayout {
+                    alignment: center;
+
+                    if root.notice.has-image: Image {
+                        width: Size.notice-badge;
+                        height: Size.notice-badge;
+                        source: root.notice.image;
+                    }
+
+                    if !root.notice.has-image: Rectangle {
+                        width: Size.notice-badge;
+                        height: Size.notice-badge;
+                        border-radius: self.width / 2;
+                        background: root.tone-color;
+
+                        Text {
+                            text: root.notice.glyph;
+                            font-family: Type.icons;
+                            font-size: Size.icon-small;
+                            color: Palette.on-accent;
+                        }
+                    }
+                }
+
+                VerticalLayout {
+                    horizontal-stretch: 1;
+                    alignment: center;
+
+                    Text {
+                        text: root.notice.title;
+                        font-weight: Type.semibold;
+                        color: Palette.text;
+                        overflow: elide;
+                    }
+
+                    if root.notice.body != "": Text {
+                        text: root.notice.body;
+                        font-size: Type.caption;
+                        color: Palette.muted;
+                        overflow: elide;
+                    }
+                }
+
+                if root.notice.level >= 0: HorizontalLayout {
+                    spacing: Space.sm;
+
+                    Rectangle {
+                        y: (parent.height - self.height) / 2;
+                        width: Size.level-width;
+                        height: Size.track;
+                        border-radius: self.height / 2;
+                        background: Palette.line;
+
+                        Rectangle {
+                            x: 0;
+                            width: parent.width * root.notice.level;
+                            border-radius: self.height / 2;
+                            background: root.tone-color;
+                        }
+                    }
+
+                    Text {
+                        text: Math.round(root.notice.level * 100) + "%";
+                        font-size: Type.caption;
+                        color: Palette.text;
+                        vertical-alignment: center;
+                        min-width: Size.hit;
+                        horizontal-alignment: right;
+                    }
+                }
+            }
+
+            if !root.notice.active: HorizontalLayout {
+                padding-left: Space.sm;
+                padding-right: Space.md;
+                spacing: Space.sm;
+
+                Pet {
+                    y: (parent.height - self.height) / 2;
+                    mood: root.mood;
+                    generation: root.generation;
+                    device-scale: root.device-scale;
+                    finished => { root.pet-finished(); }
+                }
+
+                Text {
+                    text: root.time;
+                    font-family: Type.display;
+                    font-size: Type.title;
+                    font-weight: Type.semibold;
+                    color: Palette.text;
+                    vertical-alignment: center;
+                }
+
+                // Sisa timer selalu terlihat, juga saat bar tertutup.
+                if root.counting: HorizontalLayout {
+                    spacing: Space.xs;
+
+                    Text {
+                        text: Icon.timer;
+                        font-family: Type.icons;
+                        font-size: Size.icon-small;
+                        color: root.timer.state == TimerState.paused ? Palette.muted : Palette.accent;
+                        vertical-alignment: center;
+                    }
+
+                    Text {
+                        text: root.timer.remaining;
+                        font-weight: Type.semibold;
+                        color: root.timer.state == TimerState.paused ? Palette.muted : Palette.accent;
+                        vertical-alignment: center;
+                    }
+                }
+
+                Rectangle {
+                    horizontal-stretch: 1;
+                }
+
+                // Info tambahan: hanya saat island melebar. Stretch 0 supaya
+                // sisa ruang diambil spacer, bukan disebar di antara ikon.
+                if root.wide: HorizontalLayout {
+                    horizontal-stretch: 0;
+                    spacing: Space.md;
+
+                    if root.now.playing: Text {
+                        text: Icon.music;
+                        font-family: Type.icons;
+                        font-size: Size.icon-small;
+                        color: Palette.music;
+                        vertical-alignment: center;
+                    }
+
+                    if root.cpu-temp > 0: HorizontalLayout {
+                        horizontal-stretch: 0;
+                        spacing: Space.xs;
+
+                        Text {
+                            text: Icon.thermometer;
+                            font-family: Type.icons;
+                            font-size: Size.icon-small;
+                            color: Palette.muted;
+                            vertical-alignment: center;
+                        }
+
+                        Text {
+                            text: root.cpu-temp + "°";
+                            color: root.hot ? Palette.temp-hot : Palette.text;
+                            vertical-alignment: center;
+                        }
+                    }
+                }
+
+                // Baterai selalu terlihat.
+                if root.power.has-battery: HorizontalLayout {
+                    horizontal-stretch: 0;
+                    spacing: Space.xs;
+
+                    if root.power.plugged: Text {
+                        text: Icon.bolt;
+                        font-family: Type.icons;
+                        font-size: Size.icon-small;
+                        color: Palette.battery-charging;
+                        vertical-alignment: center;
+                    }
+
+                    Battery {
+                        y: (parent.height - self.height) / 2;
+                        power: root.power;
+                    }
+
+                    Text {
+                        text: root.power.percent + "%";
+                        color: Palette.text;
+                        vertical-alignment: center;
+                    }
                 }
             }
         }
 
-        HorizontalLayout {
-            padding-left: Space.sm;
-            padding-right: Space.md;
-            spacing: Space.sm;
+        // Panel: tab di atas, halaman bergeser saat tab berganti.
+        Rectangle {
+            y: root.icon-mode ? 0 : root.row-height;
+            height: Size.tray-height;
+            width: root.panel-width;
+            x: (parent.width - self.width) / 2;
+            opacity: root.open ? 1 : 0;
+            animate opacity { duration: Motion.move; easing: Motion.ease; }
 
-            Pet {
-                y: (parent.height - self.height) / 2;
-                mood: root.mood;
-                generation: root.generation;
-                finished => { root.pet-finished(); }
+            Tabs {
+                x: Space.lg;
+                y: Space.xs;
+                labels: ["Waktu", "Musik", "Timer", "Catatan", "Shelf"];
+                current: root.tab;
+                select(i) => {
+                    root.tab = i;
+                    root.tab-changed();
+                }
             }
 
-            Text {
-                text: root.time;
-                font-family: Type.display;
-                font-size: Type.title;
-                font-weight: Type.semibold;
-                color: Palette.text;
-                vertical-alignment: center;
-            }
+            pages := Rectangle {
+                y: Size.tab-height + Space.xs;
+                height: parent.height - self.y;
+                clip: true;
 
-            Text {
-                text: root.date;
-                color: Palette.muted;
-                horizontal-stretch: 1;
-                horizontal-alignment: right;
-                vertical-alignment: center;
-                overflow: elide;
-                opacity: root.wide ? 1 : 0;
-                animate opacity { duration: Motion.move; easing: Motion.ease; }
+                ClockPanel {
+                    x: (0 - root.tab) * pages.width;
+                    width: pages.width;
+                    height: pages.height;
+                    opacity: root.tab == 0 ? 1 : 0;
+                    animate x, opacity { duration: Motion.move; easing: Motion.ease; }
+
+                    greeting: root.greeting;
+                    time: root.time;
+                    zone: root.zone;
+                    date: root.date;
+                    mood: root.mood;
+                    generation: root.generation;
+                    device-scale: root.device-scale;
+                    weather: root.weather;
+                    pet-clicked => { root.pet-clicked(); }
+                    pet-finished => { root.pet-finished(); }
+                    refresh-weather => { root.refresh-weather(); }
+                }
+
+                MusicPanel {
+                    x: (1 - root.tab) * pages.width;
+                    width: pages.width;
+                    height: pages.height;
+                    opacity: root.tab == 1 ? 1 : 0;
+                    animate x, opacity { duration: Motion.move; easing: Motion.ease; }
+
+                    now: root.now;
+                    cover: root.cover;
+                    has-cover: root.has-cover;
+                    lyrics-mode: root.lyrics-mode;
+                    lyric-lines: root.lyric-lines;
+                    lyric-current: root.lyric-current;
+                    has-tint: root.has-tint;
+                    tint: root.tint;
+                    tint-card: root.tint-card;
+                    lyrics-plain: root.lyrics-plain;
+                    lyrics-status: root.lyrics-status;
+                    play-pause => { root.play-pause(); }
+                    next => { root.next(); }
+                    previous => { root.previous(); }
+                    seek(f) => { root.seek(f); }
+                    seek-to(s) => { root.seek-to(s); }
+                }
+
+                TimerPanel {
+                    x: (2 - root.tab) * pages.width;
+                    width: pages.width;
+                    height: pages.height;
+                    opacity: root.tab == 2 ? 1 : 0;
+                    animate x, opacity { duration: Motion.move; easing: Motion.ease; }
+
+                    timer: root.timer;
+                    ringing: root.ringing;
+                    alarm-enabled <=> root.alarm-enabled;
+                    hours <=> root.timer-hours;
+                    minutes <=> root.timer-minutes;
+                    seconds <=> root.timer-seconds;
+                    start(s) => { root.timer-start(s); }
+                    pause-resume => { root.timer-pause-resume(); }
+                    stop => { root.timer-stop(); }
+                    stop-alarm => { root.stop-alarm(); }
+                }
+
+                NotesPanel {
+                    x: (3 - root.tab) * pages.width;
+                    width: pages.width;
+                    height: pages.height;
+                    opacity: root.tab == 3 ? 1 : 0;
+                    animate x, opacity { duration: Motion.move; easing: Motion.ease; }
+
+                    notes: root.notes;
+                    search <=> root.note-search;
+                    draft <=> root.note-draft;
+                    draft-deadline: root.note-draft-deadline;
+                    overdue: root.notes-overdue;
+                    can-undo: root.can-undo;
+                    picking: root.picking;
+                    picker-date: root.picker-date;
+                    picker-month: root.picker-month;
+                    picker-days: root.picker-days;
+                    picker-hour <=> root.picker-hour;
+                    picker-minute <=> root.picker-minute;
+                    search-edited(t) => { root.note-search-edited(t); }
+                    add => { root.note-add(); }
+                    toggle-done(id) => { root.note-toggle-done(id); }
+                    toggle-pin(id) => { root.note-toggle-pin(id); }
+                    remove(id) => { root.note-remove(id); }
+                    edited(id, t) => { root.note-edited(id, t); }
+                    undo => { root.note-undo(); }
+                    pick-deadline(id) => { root.note-pick-deadline(id); }
+                    picker-month-shift(d) => { root.picker-month-shift(d); }
+                    picker-pick-day(k) => { root.picker-pick-day(k); }
+                    picker-save => { root.picker-save(); }
+                    picker-clear => { root.picker-clear(); }
+                    picker-cancel => { root.picker-cancel(); }
+                }
+
+                ShelfPanel {
+                    x: (4 - root.tab) * pages.width;
+                    width: pages.width;
+                    height: pages.height;
+                    opacity: root.tab == 4 ? 1 : 0;
+                    animate x, opacity { duration: Motion.move; easing: Motion.ease; }
+
+                    items: root.shelf-items;
+                    clips: root.clips;
+                    drop-hover: root.drop-hover;
+                    open(i) => { root.shelf-open(i); }
+                    remove(i) => { root.shelf-remove(i); }
+                    drag(i) => { root.shelf-drag(i); }
+                    screenshot => { root.screenshot(); }
+                    copy(i) => { root.clip-copy(i); }
+                    keep(i) => { root.clip-keep(i); }
+                    clear-clips => { root.clips-clear(); }
+                }
             }
         }
+    }
+
+    // Mode ikon: kucing yang bisa diklik dan diseret.
+    if root.icon-mode: Pet {
+        x: root.pet-x;
+        y: root.pet-y;
+        mood: root.mood;
+        generation: root.generation;
+        device-scale: root.device-scale;
+        zoom: root.pet-scale;
+        finished => { root.pet-finished(); }
+
+        TouchArea {
+            pointer-event(e) => {
+                if (e.kind == PointerEventKind.down && e.button == PointerEventButton.left) {
+                    root.drag-start();
+                }
+                if (e.kind == PointerEventKind.up && e.button == PointerEventButton.right) {
+                    root.open-config();
+                }
+            }
+            moved => {
+                if (self.pressed) {
+                    root.drag-move();
+                }
+            }
+            clicked => { root.toggle(); }
+        }
+    }
+
+    // Keterangan hover digambar paling akhir supaya selalu di atas.
+    // Menutupi seluruh jendela dari pojok kiri atas; koordinat keterangan
+    // adalah koordinat jendela.
+    TooltipView {
+        x: 0;
+        y: 0;
+        width: root.width;
+        height: root.height;
     }
 }

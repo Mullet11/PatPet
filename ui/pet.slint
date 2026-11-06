@@ -8,11 +8,16 @@ export component Pet {
     in property <Mood> mood;
     // Naik setiap kali animasi harus diputar dari frame pertama.
     in property <int> generation;
+    // Skala layar Windows (1.25 = 125%).
+    in property <float> device-scale: 1;
+    // Perbesaran yang diinginkan; dibulatkan supaya tiap piksel sprite
+    // menjadi kotak piksel layar yang utuh dan tetap tajam.
+    in property <int> zoom: 1;
     // Animasi sekali-jalan (happy) selesai.
     callback finished();
 
-    width: Size.pet;
-    height: Size.pet;
+    width: Size.pet * Math.max(1, Math.round(zoom * device-scale)) / device-scale;
+    height: self.width;
 
     property <int> frame;
     property <bool> done;
@@ -53,4 +58,7 @@ export component Pet {
             : root.mood == Mood.yawn ? @image-url("../assets/pet/cat_yawn.png")
             : @image-url("../assets/pet/cat_idle.png");
     }
+
+    // Mis. TouchArea bila kucing bisa dielus.
+    @children
 }

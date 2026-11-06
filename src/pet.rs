@@ -58,18 +58,20 @@ impl Pet {
         self.generation
     }
 
+    pub fn set_sleep_after(&mut self, after: Duration) {
+        self.sleep_after = after;
+    }
+
     pub fn is_night(hour: u32) -> bool {
         hour >= 23 || hour < 4
     }
 
-    #[allow(dead_code)] // dipakai mulai fase musik
     pub fn set_music(&mut self, playing: bool, now: Instant) -> bool {
         self.playing = playing;
         self.update(now, false)
     }
 
     /// `completed`: timer habis sampai nol, kucing ikut senang.
-    #[allow(dead_code)] // dipakai mulai fase timer
     pub fn set_focus(&mut self, active: bool, completed: bool, now: Instant) -> bool {
         self.focus = active;
         if completed {
@@ -87,6 +89,12 @@ impl Pet {
         self.trigger_happy(now);
         self.update(now, false);
         true
+    }
+
+    /// Kucing senang tanpa jeda antar-klik, mis. saat catatan baru ditambahkan.
+    pub fn cheer(&mut self, now: Instant) -> bool {
+        self.trigger_happy(now);
+        self.update(now, false)
     }
 
     /// Dipanggil berkala. `idle` = lama pengguna tidak menyentuh mouse/keyboard.

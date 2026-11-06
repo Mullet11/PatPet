@@ -1,0 +1,51 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Paket identitas PatPet ("packaged with external location").
+  Paket ini tidak berisi program; ia hanya memberi patpet.exe yang sudah
+  ada sebuah identitas aplikasi, supaya Windows mengizinkannya membaca
+  notifikasi aplikasi lain (kemampuan userNotificationListener).
+  Publisher dan Name harus sama dengan assets/patpet.manifest.
+-->
+<Package
+  xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10"
+  xmlns:uap="http://schemas.microsoft.com/appx/manifest/uap/windows10"
+  xmlns:uap3="http://schemas.microsoft.com/appx/manifest/uap/windows10/3"
+  xmlns:uap10="http://schemas.microsoft.com/appx/manifest/uap/windows10/10"
+  xmlns:rescap="http://schemas.microsoft.com/appx/manifest/foundation/windows10/restrictedcapabilities"
+  IgnorableNamespaces="uap uap3 uap10 rescap">
+
+  <Identity Name="PatPet" Publisher="CN=PatPet Local" Version="2.0.0.0" ProcessorArchitecture="x64" />
+
+  <Properties>
+    <DisplayName>PatPet</DisplayName>
+    <PublisherDisplayName>PatPet</PublisherDisplayName>
+    <Logo>Assets\StoreLogo.png</Logo>
+    <uap10:AllowExternalContent>true</uap10:AllowExternalContent>
+  </Properties>
+
+  <Resources>
+    <Resource Language="id-ID" />
+  </Resources>
+
+  <Dependencies>
+    <TargetDeviceFamily Name="Windows.Desktop" MinVersion="10.0.19041.0" MaxVersionTested="10.0.26100.0" />
+  </Dependencies>
+
+  <Capabilities>
+    <rescap:Capability Name="runFullTrust" />
+    <uap3:Capability Name="userNotificationListener" />
+    <!-- Lokasi Windows untuk cuaca (lokasi = otomatis di patpet.conf). -->
+    <DeviceCapability Name="location" />
+  </Capabilities>
+
+  <Applications>
+    <Application Id="PatPet" Executable="patpet.exe" uap10:TrustLevel="mediumIL" uap10:RuntimeBehavior="win32App">
+      <uap:VisualElements
+        DisplayName="PatPet"
+        Description="Widget desktop kucing pixel art"
+        BackgroundColor="transparent"
+        Square150x150Logo="Assets\Square150x150Logo.png"
+        Square44x44Logo="Assets\Square44x44Logo.png" />
+    </Application>
+  </Applications>
+</Package>

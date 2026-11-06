@@ -1,0 +1,170 @@
+import { Palette, Type, Space, Radius, Size } from "theme.slint";
+import { Pet, Mood } from "pet.slint";
+import { IconButton, HoverTip, Icon } from "parts.slint";
+
+export struct Weather {
+    ready: bool,
+    busy: bool,
+    temperature: string,
+    summary: string,
+    // Nama daerah, atau pesan status bila belum siap.
+    place: string,
+}
+
+// Isi panel Waktu: jam besar, tanggal, kucing, dan cuaca.
+export component ClockPanel {
+    in property <string> greeting;
+    in property <string> time;
+    in property <string> zone;
+    in property <string> date;
+    in property <Mood> mood;
+    in property <int> generation;
+    in property <float> device-scale;
+    in property <Weather> weather;
+    callback pet-clicked();
+    callback pet-finished();
+    callback refresh-weather();
+
+    pure function mood-text(m: Mood) -> string {
+        if (m == Mood.sleep) { return "Zzz…"; }
+        if (m == Mood.yawn) { return "Hoaam…"; }
+        if (m == Mood.happy) { return "Senang!"; }
+        if (m == Mood.music) { return "Ikut ngangguk"; }
+        if (m == Mood.focus) { return "Fokus bareng"; }
+        return "Santai";
+    }
+
+    VerticalLayout {
+        padding: Space.lg;
+        padding-top: Space.sm;
+        spacing: Space.md;
+
+        HorizontalLayout {
+            spacing: Space.lg;
+
+            VerticalLayout {
+                horizontal-stretch: 1;
+                alignment: center;
+
+                Text {
+                    text: root.greeting;
+                    color: Palette.muted;
+                }
+
+                HorizontalLayout {
+                    alignment: start;
+                    spacing: Space.sm;
+
+                    Text {
+                        text: root.time;
+                        font-family: Type.display;
+                        font-size: Type.hero;
+                        font-weight: Type.semibold;
+                        color: Palette.text;
+                    }
+
+                    // Diangkat setinggi selisih descent supaya sejajar garis dasar jam.
+                    VerticalLayout {
+                        alignment: end;
+                        padding-bottom: Space.sm;
+
+                        Text {
+                            text: root.zone;
+                            font-size: Type.caption;
+                            font-weight: Type.semibold;
+                            color: Palette.accent;
+                        }
+                    }
+                }
+
+                Text {
+                    text: root.date;
+                    color: Palette.text;
+                }
+            }
+
+            VerticalLayout {
+                alignment: center;
+                spacing: Space.xs;
+
+                HorizontalLayout {
+                    alignment: center;
+
+                    Pet {
+                        mood: root.mood;
+                        generation: root.generation;
+                        device-scale: root.device-scale;
+                        zoom: 2;
+                        finished => { root.pet-finished(); }
+
+                        HoverTip {
+                            text: "Elus kucingnya";
+                            active: pat.has-hover;
+                        }
+
+                        pat := TouchArea {
+                            clicked => { root.pet-clicked(); }
+                        }
+                    }
+                }
+
+                Text {
+                    text: root.mood-text(root.mood);
+                    font-size: Type.caption;
+                    color: Palette.muted;
+                    horizontal-alignment: center;
+                }
+            }
+        }
+
+        Rectangle {
+            background: Palette.raised;
+            border-radius: Radius.row;
+
+            HorizontalLayout {
+                padding-left: Space.md;
+                padding-right: Space.xs;
+                padding-top: Space.sm;
+                padding-bottom: Space.sm;
+                spacing: Space.md;
+
+                if root.weather.ready: Text {
+                    text: root.weather.temperature;
+                    font-family: Type.display;
+                    font-size: Type.headline;
+                    font-weight: Type.semibold;
+                    color: Palette.text;
+                    vertical-alignment: center;
+                }
+
+                VerticalLayout {
+                    horizontal-stretch: 1;
+                    alignment: center;
+
+                    if root.weather.ready: Text {
+                        text: root.weather.summary;
+                        color: Palette.text;
+                    }
+
+                    Text {
+                        text: root.weather.place;
+                        font-size: root.weather.ready ? Type.caption : Type.body;
+                        color: Palette.muted;
+                        overflow: elide;
+                    }
+                }
+
+                VerticalLayout {
+                    alignment: center;
+
+                    IconButton {
+                        glyph: Icon.refresh;
+                        tip: "Perbarui cuaca";
+                        enabled: !root.weather.busy;
+                        clicked => { root.refresh-weather(); }
+                    }
+                }
+            }
+        }
+    }
+}
