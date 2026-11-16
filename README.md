@@ -11,34 +11,71 @@ display's refresh rate (60/120/144/165 Hz…) by waiting for vertical blank. The
 
 | Tab | What it does |
 | --- | --- |
+| Pet | The cat's room: look after it (feed, play, sleep, bath), watch it level up and unlock new rooms. See [The cat](#the-cat). |
 | Music | Shows what's playing in any player that reports to Windows media controls (Spotify, Apple Music, browsers/YouTube, …). Play/pause, previous/next, click the bar to seek. Scroll on the island to change volume. |
 | Lyrics | The speech-bubble button splits the island: live synced lyrics from [lrclib.net](https://lrclib.net). Click a line to jump to it. |
-| Focus | Pomodoro timer (default 25/5), countdown in the compact pill, soft chime when a phase ends. |
-| Water | Bottle size, daily goal, reminder interval. Reminders run 07:00–23:00 until you reach the goal; switch them off with the Reminders toggle. |
 | Shelf | Drag files onto the island to keep them, drag them back out into chats, emails or folders. Images show a small preview. Click a file to open it. With many files, scroll to slide through them. New screenshots (saved in Pictures\Screenshots by Win+PrtScn or the Snipping Tool) are added automatically; switch that off in the tray menu. |
 | Tasks | A month calendar next to the tasks of the day you pick. Days with tasks get a dot (red: overdue). Pick a day, type a task and set a time (− / + or the mouse wheel, ±15 / ±5 min; a later day starts at 09:00), then press Enter. Scroll over the calendar to change month, click the month name to jump back to today. Today also lists tasks without a time and unfinished ones from earlier days. Reminders come 1 day, 6 hours, 3 hours, 1 hour and 30 minutes before the deadline, and when it is due. While a full-screen app is in front they stay quiet and show once it is gone. |
 | Clipboard | The last 30 pieces of text you copied, newest first. Click one to copy it again (it keeps its place), or remove it with ✕. **Copy all** copies every entry at once, oldest first, one per line. Text dragged onto the island (from a browser or an editor) is added here too, without touching what is on the Windows clipboard. Kept in memory only, so the list is gone when PatPet closes, and copies that apps mark as private (password managers) are skipped. Text only, no images. |
 
 ## The cat
 
-A small pixel cat sits in the island and follows what you are doing:
+A small pixel cat lives in the island and follows what you are doing:
 
-* closed island: in the middle of the empty notch, or at the left end next to the song, timer or task
-* open island: in the tab bar, next to the battery and the clock
+* closed island: in the middle of the empty notch, or at the left end next to the song or task
+* open island: in its own **Pet** tab (its room), or in the tab bar of the other tabs
 * two-line notices: at the right end
 
-| Mood | When |
-| --- | --- |
-| Idle | nothing special going on |
-| Music | something is playing (headphones on) |
-| Focus | a focus session is running (reading) |
-| Sleep | no mouse or keyboard input for 5 minutes |
-| Yawn | now and then late at night (23:00–04:00) |
-| Happy | petted, a task ticked off, a bottle logged, a focus session finished, the charger plugged in |
+### Looking after it
+
+The Pet tab shows the cat's room. It strolls around, grooms, wags its tail and stretches now and then.
+Below the room are four cards, one per need. Each need runs down in real time, also while PatPet is closed
+(a long absence counts as at most 3 days):
+
+| Card | Need | Empties in about | What it does |
+| --- | --- | --- | --- |
+| Feed | food | 8 hours | +35 food, the cat eats from its bowl |
+| Play | fun | 10 hours | +30 fun, −5 energy, the cat plays with yarn and pounces |
+| Sleep / Wake | energy | 16 hours awake | lights out; it sleeps until fully rested (+25 an hour), or until you wake it |
+| Bath | hygiene | 24 hours | back to 100, with a bath and a shake |
+
+The cat also sleeps when you leave the PC for 5 minutes, and time PatPet is closed counts as sleep.
+When a need drops below 25% the cat shows it (hungry, sad, sleepy or dirty, in the room and in the closed
+island), and a gentle notice says so at most every 3 hours. Nothing worse happens: it is only sad.
 
 **Petting:** in the closed island, move the mouse back and forth over the cat; in the open island,
 click it. It jumps with joy and little hearts float up (once every 2 seconds at most).
-The sprites are the PNG strips in `assets/pet` (32×32 frames side by side), embedded in the exe.
+
+### Levels and rooms
+
+Feeding (+5), playing (+8), a bath (+5), petting (+1) and every task you tick off (+10) give experience;
+actions only count while that need is below 90%. Level *n* needs 40 + 20·*n* experience. Levelling up plays
+a celebration and opens new rooms; switch between open rooms with the arrows at the top right of the room.
+
+| Level | Room |
+| --- | --- |
+| 1 | Cardboard box |
+| 3 | Bedroom |
+| 5 | Living room |
+| 8 | Garden |
+| 12 | Treehouse |
+| 16 | Castle |
+
+| Mood | When |
+| --- | --- |
+| Eat, Play, Pounce, Bath, Shake, Level-up | acting out a care card or a new level |
+| Happy | petted, a task ticked off, the charger plugged in |
+| Sleep | put to bed, or no mouse or keyboard input for 5 minutes |
+| Music | something is playing (headphones on) |
+| Hungry, Sad, Sleepy, Dirty | a need is below 25% |
+| Walk | strolling around its room |
+| Groom, Tail wag, Stretch | now and then, when nothing else is going on |
+| Yawn | now and then late at night (23:00–04:00) |
+| Idle | nothing special going on |
+
+The care state is saved with the rest of the data in `%APPDATA%\PatPet\data.json` (`pet`).
+The pictures are PNGs in `assets/pet`: cat animation strips (32×32 frames side by side), `props.png`
+(16×16 icons) and `rooms/` (232×70, drawn at 2×), all embedded in the exe.
 
 System notices: volume and brightness HUD, Caps Lock, keyboard language changes,
 charger plugged/unplugged, low battery, Wi-Fi connected or lost, audio output/headphones changed, text copied.
@@ -105,7 +142,7 @@ button_hover = auto
 button_text = auto
 # the selected button (the open tab); not affected by button_hover
 button_active = auto
-# main colored buttons (Start focus, + Bottle, add task, Deselect); auto = each feature's color
+# main colored buttons (add task, Deselect); auto = each feature's color
 button_accent = auto
 # text and icons on them; auto = black or white, whichever reads better
 button_accent_text = auto
@@ -119,10 +156,6 @@ icon_active = auto
 audio_bar = auto
 spectrum = auto
 lyrics_hover = auto
-
-# focus timer: while focusing and during a break (auto = orange and green)
-timer = auto
-timer_break = auto
 ```
 
 * Colors are `#RGB`, `#RRGGBB` or `#RRGGBBAA` (the last two digits set transparency, e.g. `#FFFFFF66`).
@@ -143,10 +176,10 @@ This runs `cargo build --release`; `build.rs` embeds `assets/app.ico` and the ma
 
 Or just double-click `rebuild.bat`: it closes the running PatPet, builds, and starts the new build.
 
-For screenshots and testing, `PATPET_DEMO=pet|media|lyrics|focus|water|shelf|tasks|tasksday|taskremind|clipboard|clipboardempty|tasksempty|toast|volume|focuspill|shelfimg|cliphover|cliphoverfull|caps|capsoff|tws|charging|copied|idle|line`
+For screenshots and testing, `PATPET_DEMO=pet|petroom|pethungry|petnap|petlevel|petpill|media|lyrics|shelf|tasks|tasksday|taskremind|clipboard|clipboardempty|tasksempty|toast|volume|shelfimg|cliphover|cliphoverfull|caps|capsoff|tws|charging|copied|idle|line`
 opens a specific view on start (`pet`: the happy cat with hearts; demo mode never saves data).
 With `PATPET_DUMP=out.bmp` as well, the settled frame is saved to that file and PatPet quits. `PATPET_DEMO=stress` keeps opening and closing the island
-to check for leaks (`PATPET_STRESS=fetch|toggle|water`, `PATPET_STRESS_MS`, `PATPET_STRESS_N`). `PATPET_MOUSE=x,y` pretends
+to check for leaks (`PATPET_STRESS=fetch|toggle`, `PATPET_STRESS_MS`, `PATPET_STRESS_N`). `PATPET_MOUSE=x,y` pretends
 the cursor rests there, to see hovers. `PATPET_DEBUG=1` writes a log to `%TEMP%\patpet.log`.
 `PATPET_NO_UPDATE=1` skips the update check. `PATPET_UPDATE_FROM=1.0.0` pretends to be that version; with
 `PATPET_DEMO=update` it installs the latest release right away (run a copy in a spare folder: it replaces that exe).

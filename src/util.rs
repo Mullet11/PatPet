@@ -58,9 +58,6 @@ pub struct Now {
 }
 
 impl Now {
-    pub fn date(&self) -> String {
-        format!("{:04}-{:02}-{:02}", self.y, self.mo, self.d)
-    }
     pub fn day(&self) -> i64 {
         self.secs.div_euclid(86400)
     }
@@ -72,6 +69,11 @@ impl Now {
         let mo = MO[(self.mo.clamp(1, 12) - 1) as usize];
         format!("{wd}, {} {mo}", self.d)
     }
+}
+
+/// Real time in seconds since 1970 (UTC), for things that must not jump with the clock.
+pub fn unix_now() -> i64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0)
 }
 
 pub fn now() -> Now {

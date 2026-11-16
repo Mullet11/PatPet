@@ -17,7 +17,8 @@ use crate::events::{self, Event};
 use crate::gfx::{Al, Gfx, BLACK, C, WHITE};
 use crate::lyrics::{self, Line};
 use crate::media::{MediaCmd, MediaState};
-use crate::pet::{Mood, Pet};
+use crate::care::{self, Need};
+use crate::pet::{Action, Mood, Pet};
 use crate::store::{self, Data, Task};
 use crate::util::*;
 use crate::{clip, shelf, shots, sound, system, theme, thumbs, tray, update};
@@ -30,9 +31,6 @@ const T3: C = C(1.0, 1.0, 1.0, 0.38);
 const PURE_WHITE: C = C(0.9999, 0.9999, 0.9999, 1.0);
 const SURF: C = C(1.0, 1.0, 1.0, 0.08);
 const SURF_H: C = C(1.0, 1.0, 1.0, 0.16);
-const FOCUS_C: C = C::hex(0xFF7A59);
-const BREAK_C: C = C::hex(0x4CD787);
-const WATER_C: C = C::hex(0x4DB8FF);
 const TASK_C: C = C::hex(0xFFC53D);
 const SHELF_C: C = C::hex(0xB18CFF);
 const RED: C = C::hex(0xFF5C5C);
@@ -54,6 +52,25 @@ const HEARTS_SECS: f32 = 1.3;
 /// widths) within STROKE_WINDOW counts as petting.
 const STROKE_WIDTHS: f32 = 2.5;
 const STROKE_WINDOW: Duration = Duration::from_millis(1500);
+/// Prop icons in assets/pet/props.png, left to right.
+mod prop {
+    pub const BOWL: usize = 0;
+    pub const YARN: usize = 2;
+    pub const ZZZ: usize = 4;
+    pub const FISH: usize = 6;
+    pub const DIRT: usize = 7;
+    pub const RAIN: usize = 8;
+    pub const STAR: usize = 9;
+    pub const BOLT: usize = 10;
+    pub const SOAP: usize = 11;
+}
+/// Room view in the Pet tab: background pixels are drawn this many DIP each (232 px → 464 DIP).
+const ROOM_SCALE: f32 = 2.0;
+const ROOM_H: f32 = crate::sprites::ROOM_H as f32 * ROOM_SCALE;
+/// Walking speed in the room (share of the room's width per second).
+const WALK_SPEED: f32 = 0.07;
+/// A "your cat needs..." notice comes at most this often.
+const NEED_NOTICE_EVERY: i64 = 3 * 3600;
 /// Heart glyph (Segoe Fluent Icons / MDL2: HeartFill).
 const HEART: char = '\u{EB52}';
 
@@ -78,7 +95,6 @@ mod ic {
     pub const PREV: char = '\u{E892}';
     pub const NEXT: char = '\u{E893}';
     pub const LYRICS: char = '\u{E8BD}';
-    pub const TIMER: char = '\u{E916}';
     pub const FOLDER: char = '\u{E8B7}';
     pub const TASKS: char = '\u{E9D5}';
     pub const VOL: char = '\u{E767}';
@@ -91,8 +107,6 @@ mod ic {
     pub const CLOSE: char = '\u{E711}';
     pub const BOX: char = '\u{E739}';
     pub const BOX_ON: char = '\u{E73A}';
-    pub const UNDO: char = '\u{E7A7}';
-    pub const RESET: char = '\u{E72C}';
     pub const MINUS: char = '\u{E738}';
     pub const DOC: char = '\u{E7C3}';
     pub const CHECK: char = '\u{E73E}';
@@ -106,14 +120,13 @@ mod ic {
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Tab {
+    Pet,
     Media,
-    Focus,
-    Water,
     Shelf,
     Tasks,
     Clipboard,
 }
-const TABS: [Tab; 6] = [Tab::Media, Tab::Focus, Tab::Water, Tab::Shelf, Tab::Tasks, Tab::Clipboard];
+const TABS: [Tab; 5] = [Tab::Pet, Tab::Media, Tab::Shelf, Tab::Tasks, Tab::Clipboard];
 
 #[derive(Clone, Copy, PartialEq, Debug)]
 enum ViewKey {
@@ -127,12 +140,6 @@ enum ViewKey {
 /// Number fields that can be typed into directly.
 #[derive(Clone, Copy, PartialEq, Debug)]
 enum Field {
-    FocusMin,
-    BreakMin,
-    Bottle,
-    Goal,
-    Interval,
-    DrinkMl,
     TaskTime,
 }
 
@@ -143,12 +150,11 @@ struct Edit {
     fresh: bool,
 }
 
-/// What the closed island is showing. Priority: media > focus timer > task due soon > clock.
+/// What the closed island is showing. Priority: media > task due soon > the cat alone.
 #[derive(Clone, Copy, PartialEq, Debug)]
 enum Live {
     Idle,
     Media,
-    Pomo,
     Task,
 }
 
@@ -258,14 +264,6 @@ enum Act {
     Seek(R),
     Lyrics,
     LyricLine(f64),
-    FocusToggle,
-    FocusReset,
-    FocusSkip,
-    FocusLen(bool, i32),
-    WaterAdd(u32),
-    WaterUndo,
-    WaterSet(u8, i32),
-    WaterRemind,
     ShelfItem(usize),
     ShelfRemove(usize),
     ShelfClear,
@@ -289,6 +287,10 @@ enum Act {
     VolBar(R),
     /// clicking the cat in the open island
     Pet,
+    /// one of the care cards in the Pet tab (feed, play, sleep, bath)
+    Care(Need),
+    /// show the previous / next open room
+    Room(i32),
 }
 
 pub enum Deferred {
@@ -300,7 +302,8 @@ enum TIcon {
     G(char),
     Txt(String),
     Battery(f32, bool),
-    Drop,
+    /// an icon from props.png
+    Prop(usize),
 }
 
 const K_INFO: u8 = 0;
@@ -335,34 +338,6 @@ enum Lyr {
     Loading,
     Missing,
     Found(Vec<Line>),
-}
-
-#[derive(Clone, Copy, PartialEq)]
-enum PMode {
-    Idle,
-    Focus,
-    Break,
-}
-
-struct Pomo {
-    mode: PMode,
-    end: Instant,
-    left: f64,
-    total: f64,
-    paused: bool,
-}
-
-impl Pomo {
-    fn active(&self) -> bool {
-        self.mode != PMode::Idle
-    }
-    fn remaining(&self) -> f64 {
-        if self.paused {
-            self.left
-        } else {
-            self.end.saturating_duration_since(Instant::now()).as_secs_f64()
-        }
-    }
 }
 
 #[derive(Clone, Copy)]
@@ -476,7 +451,6 @@ pub struct App {
     lyr_key: u64,
     lyr: Lyr,
     lyr_scroll: f32,
-    pomo: Pomo,
     toast: Option<Toast>,
     toast_seq: u64,
     audio: Option<system::Audio>,
@@ -534,7 +508,6 @@ pub struct App {
     t0: Instant,
     last_sec: Instant,
     tick_ms: u32,
-    water_mark: Instant,
     win: (i32, i32, i32, i32),
     isl_px: (i32, i32, i32, i32),
     demo: bool,
@@ -587,6 +560,16 @@ pub struct App {
     pet: Pet,
     cat_strips: Vec<Option<crate::sprites::Strip>>,
     cat_bmps: Vec<Option<ID2D1Bitmap>>,
+    props_bmp: Option<ID2D1Bitmap>,
+    /// the room shown in the Pet tab (index into care::ROOMS); decoded while that tab is open
+    room_bmp: Option<(usize, ID2D1Bitmap)>,
+    /// where the cat is in its room (0 = left wall, 1 = right wall), where it is heading,
+    /// when it sets off again, and when its position was last moved
+    room_x: f32,
+    room_goal: Option<f32>,
+    room_rest: Instant,
+    room_step: Instant,
+    room_rng: u32,
     cat_frame: (Mood, usize),
     /// where the cat was drawn last (window DIP), for stroking it with the mouse
     cat_rect: std::cell::Cell<Option<R>>,
@@ -617,15 +600,6 @@ impl App {
         gfx.set_theme(&th);
         let first_run = store::first_run();
         let mut data = store::load();
-        let today = now().date();
-        if data.water.date != today {
-            data.water.date = today.clone();
-            data.water.log.clear();
-        }
-        if data.focus.date != today {
-            data.focus.date = today;
-            data.focus.sessions = 0;
-        }
         if first_run && std::env::var_os("PATPET_DEMO").is_none() {
             // Fresh install: on by default. Saved at once, so what the user changes later stays.
             tray::set_autostart(true);
@@ -657,7 +631,7 @@ impl App {
             screen_cx: 0.0,
             no_hover_until: None,
             expanded: false,
-            tab: Tab::Media,
+            tab: Tab::Pet,
             lyrics_open: false,
             hits: Vec::new(),
             mouse: None,
@@ -672,7 +646,6 @@ impl App {
             lyr_key: 0,
             lyr: Lyr::None,
             lyr_scroll: 0.0,
-            pomo: Pomo { mode: PMode::Idle, end: n, left: 0.0, total: 1.0, paused: false },
             toast: None,
             toast_seq: 0,
             audio,
@@ -715,7 +688,6 @@ impl App {
             t0: n,
             last_sec: n,
             tick_ms: 0,
-            water_mark: n,
             win: (0, 0, 0, 0),
             isl_px: (0, 0, 0, 0),
             demo: false,
@@ -747,8 +719,15 @@ impl App {
             upd_next: n + Duration::from_secs(20),
             upd_shown: None,
             pet: Pet::new(CAT_SLEEP_AFTER),
-            cat_strips: crate::sprites::load(),
+            cat_strips: crate::sprites::cats(),
             cat_bmps: Vec::new(),
+            props_bmp: None,
+            room_bmp: None,
+            room_x: 0.45,
+            room_goal: None,
+            room_rest: n + Duration::from_secs(2),
+            room_step: n,
+            room_rng: 0x9E37_79B9,
             cat_frame: (Mood::Idle, 0),
             cat_rect: std::cell::Cell::new(None),
             stroke: None,
@@ -823,7 +802,7 @@ impl App {
         }
     }
 
-    /// Screenshot/testing aid: PATPET_DEMO=media|lyrics|focus|water|shelf|tasks|toast|volume|caps|capsoff|stress
+    /// Screenshot/testing aid: PATPET_DEMO=pet|media|lyrics|shelf|tasks|toast|volume|caps|capsoff|stress
     fn demo_view(&mut self, v: &str) {
         self.demo = true;
         match v {
@@ -833,16 +812,6 @@ impl App {
                 self.ensure_lyrics();
             }
             "media" => self.expand(Some(Tab::Media)),
-            "focus" => {
-                self.start_phase(PMode::Focus);
-                self.expand(Some(Tab::Focus));
-            }
-            "water" => {
-                if self.data.water.log.is_empty() {
-                    self.data.water.log = vec![500, 250];
-                }
-                self.expand(Some(Tab::Water));
-            }
             "shelf" | "shelfall" => {
                 if v == "shelfall" {
                     self.shelf_sel = self.data.shelf.iter().take(2).cloned().collect();
@@ -930,28 +899,41 @@ impl App {
                 self.expand(Some(Tab::Tasks));
             }
             "pet" => self.cheer(),
-            "toast" => self.toast(TIcon::Drop, "Time to drink some water", "750 / 2000 ml today · tap to log", 600.0, WATER_C, Some(Tab::Water)),
+            "petroom" | "pethungry" | "petnap" | "petlevel" => {
+                let c = &mut self.data.pet;
+                c.updated = unix_now();
+                c.level = 6;
+                c.xp = 70;
+                c.room = 2;
+                match v {
+                    "pethungry" => c.food = 12.0,
+                    "petnap" => c.nap = true,
+                    _ => {}
+                }
+                self.sync_care();
+                if v == "petlevel" {
+                    self.on_levels(1);
+                }
+                self.expand(Some(Tab::Pet));
+            }
+            "petpill" => {
+                self.data.pet.updated = unix_now();
+                self.data.pet.clean = 10.0;
+                self.sync_care();
+            }
+            "toast" => self.toast(TIcon::G(ic::FOLDER), "Screenshot added to Shelf", "Drag it anywhere from the Shelf", 600.0, SHELF_C, Some(Tab::Shelf)),
             "volume" => {
                 self.hud(K_VOL, ic::VOL, 0.64, WHITE);
                 if let Some(t) = &mut self.toast {
                     t.until = Instant::now() + Duration::from_secs(600);
                 }
             }
-            "focuspill" => self.start_phase(PMode::Focus),
             "caps" => self.toast(TIcon::Txt("⇪".into()), "Caps Lock on", "", 600.0, GREEN, None),
             "capsoff" => self.toast(TIcon::Txt("⇪".into()), "Caps Lock off", "", 600.0, WHITE, None),
             "tws" => self.toast(TIcon::G(ic::HEADPHONE), "Headphones connected", "Galaxy Buds2 Pro", 600.0, WHITE, None),
             "copied" => self.toast(TIcon::G(ic::CLIP), "Text copied", "", 600.0, WHITE, None),
             "charging" => self.toast(TIcon::Battery(0.64, true), "Charging", "64% · plugged in", 600.0, GREEN, None),
             "idle" => self.demo_idle = true,
-            "editwater" => {
-                self.expand(Some(Tab::Water));
-                self.edit = Some(Edit { field: Field::Goal, buf: "2.5".into(), fresh: false });
-            }
-            "editdrink" => {
-                self.expand(Some(Tab::Water));
-                self.edit = Some(Edit { field: Field::DrinkMl, buf: "330".into(), fresh: false });
-            }
             "edittask" => {
                 self.input = "Submit assignment".into();
                 self.expand(Some(Tab::Tasks));
@@ -963,13 +945,10 @@ impl App {
                 update::check(true);
             }
             "taskremind" => self.toast(TIcon::G(ic::TASKS), "Task due in 1 hour", "Send the weekly report · 14:30", 600.0, TASK_C, Some(Tab::Tasks)),
-            "taskpill" | "taskfocus" => {
+            "taskpill" => {
                 self.demo_idle = true;
                 let n = now().secs;
                 self.data.tasks = vec![Task { id: 1, text: "Call the dentist".into(), due: Some(n + 8 * 60 + 30), ..Default::default() }];
-                if v == "taskfocus" {
-                    self.start_phase(PMode::Focus);
-                }
             }
             _ => {}
         }
@@ -1064,23 +1043,6 @@ impl App {
         }
     }
 
-    /// The timer's color: theme.conf `timer` / `timer_break`, else orange / green.
-    fn pomo_color(&self) -> C {
-        if self.pomo.mode == PMode::Break {
-            self.break_color()
-        } else {
-            self.focus_color()
-        }
-    }
-
-    fn focus_color(&self) -> C {
-        self.gfx.theme.timer.unwrap_or(FOCUS_C)
-    }
-
-    fn break_color(&self) -> C {
-        self.gfx.theme.timer_break.unwrap_or(BREAK_C)
-    }
-
     // -------------------------------------------------------------- toasts
 
     fn toast(&mut self, icon: TIcon, title: &str, sub: &str, secs: f32, accent: C, tab: Option<Tab>) {
@@ -1135,8 +1097,6 @@ impl App {
     fn expand(&mut self, tab: Option<Tab>) {
         let t = tab.unwrap_or(if self.media.is_some() {
             Tab::Media
-        } else if self.pomo.active() {
-            Tab::Focus
         } else if self.tab == Tab::Media {
             Tab::Media
         } else {
@@ -1189,10 +1149,9 @@ impl App {
         if self.expanded {
             let lyr = self.tab == Tab::Media && self.lyrics_open && self.media.is_some();
             let (w, h) = match self.tab {
+                Tab::Pet => (500.0, 264.0),
                 Tab::Media if lyr => (760.0, 214.0),
                 Tab::Media => (500.0, 190.0),
-                Tab::Focus => (500.0, 190.0),
-                Tab::Water => (500.0, 214.0),
                 Tab::Shelf => (500.0, 196.0),
                 Tab::Tasks => (500.0, 250.0),
                 Tab::Clipboard => (500.0, 250.0),
@@ -1229,9 +1188,6 @@ impl App {
         let mut v = Vec::with_capacity(3);
         if self.media.is_some() {
             v.push(Live::Media);
-        }
-        if self.pomo.active() {
-            v.push(Live::Pomo);
         }
         if self.task_soon().is_some() {
             v.push(Live::Task);
@@ -1276,10 +1232,6 @@ impl App {
             Live::Idle => 0.0,
             // art | clock | equalizer — must mirror draw_compact
             Live::Media => 7.0 + (PILL_H - 10.0) + 6.0 + g.measure_clock("88:88", CLOCK_SIZE, 600) + 24.0 + 6.0 + 18.0 + 14.0,
-            Live::Pomo => {
-                let label = if self.pomo.mode == PMode::Break { "Break" } else { "Focus" };
-                12.0 + 16.0 + 6.0 + g.measure(label, 12.5, 600) + 22.0 + 16.0 + 6.0 + g.measure("88:88", 13.5, 600) + 14.0
-            }
             Live::Task => {
                 let (text, due, _) = self.task_line().unwrap_or_default();
                 12.0 + 16.0 + 8.0 + g.measure(&text, 12.5, 500).clamp(30.0, 170.0) + 10.0 + g.measure(&due, 12.0, 600) + 14.0
@@ -1685,7 +1637,6 @@ impl App {
     fn segment_width(&self, sec: Option<Live>) -> f32 {
         let g = &self.gfx;
         match sec {
-            Some(Live::Pomo) => 12.0 + 14.0 + 6.0 + g.measure("88:88", 12.5, 600) + 14.0,
             Some(Live::Task) => {
                 let due = self.task_line().map(|t| t.1).unwrap_or_default();
                 12.0 + 14.0 + 5.0 + g.measure(&due, 12.0, 600) + 14.0
@@ -1698,15 +1649,6 @@ impl App {
         // thin divider between the two activities
         g.line(r.x, r.cy() - 8.0, r.x, r.cy() + 8.0, 1.0, WHITE.a(0.16));
         match sec {
-            Live::Pomo => {
-                let col = self.pomo_color();
-                let rem = self.pomo.remaining();
-                let rcx = r.x + 12.0 + 7.0;
-                g.circle_stroke(rcx, r.cy(), 6.5, col.a(0.25), 2.2);
-                g.arc(rcx, r.cy(), 6.5, (rem / self.pomo.total) as f32, 2.2, col);
-                g.text(&mmss(rem), R::new(rcx + 13.0, r.y, r.right() - rcx - 13.0, r.h), 12.5, 600, col, Al::L);
-                ui.hit(r, Act::Tab(Tab::Focus));
-            }
             Live::Task => {
                 let Some((_, due, now_due)) = self.task_line() else { return };
                 let col = if now_due { RED } else { TASK_C };
@@ -1750,21 +1692,6 @@ impl App {
                     self.bottom_progress(g, full, (self.media_pos() / m.dur) as f32, g.theme.audio_bar.unwrap_or(acc).a(0.85));
                 }
             }
-            Live::Pomo => {
-                let col = self.pomo_color();
-                let rem = self.pomo.remaining();
-                let label = if self.pomo.mode == PMode::Break { "Break" } else { "Focus" };
-                let label = if self.pomo.paused { "Paused" } else { label };
-                g.icon(ic::TIMER, R::new(c.x + 10.0, c.y, 20.0, c.h), 13.0, col);
-                g.text(label, R::new(c.x + 34.0, c.y, 70.0, c.h), 12.5, 600, T2, Al::L);
-                let txt = mmss(rem);
-                let tr = R::new(c.right() - 70.0, c.y, 56.0, c.h);
-                g.text(&txt, tr, 13.5, 600, col, Al::R);
-                let rcx = tr.right() - g.measure(&txt, 13.5, 600) - 14.0;
-                g.circle_stroke(rcx, c.cy(), 6.5, col.a(0.25), 2.2);
-                g.arc(rcx, c.cy(), 6.5, (rem / self.pomo.total) as f32, 2.2, col);
-                self.bottom_progress(g, full, 1.0 - (rem / self.pomo.total) as f32, col.a(0.85));
-            }
             Live::Task => {
                 let Some((text, due, now_due)) = self.task_line() else { return };
                 let col = if now_due { RED } else { TASK_C };
@@ -1783,11 +1710,7 @@ impl App {
             TIcon::G(ch) => g.icon(*ch, r, 17.0, acc),
             TIcon::Txt(s) => g.text(s, r, 16.0, 700, acc, Al::C),
             TIcon::Battery(f, ch) => draw_battery(g, r.cx() - 12.0, r.cy(), 22.0, 12.0, *f, *ch),
-            TIcon::Drop => {
-                if let Some(geo) = g.drop_geo(R::new(r.cx() - 7.0, r.cy() - 9.5, 14.0, 19.0)) {
-                    g.fill_geo(&geo, g.legible(g.text_alpha(acc)));
-                }
-            }
+            TIcon::Prop(i) => self.draw_prop(g, *i, R::new(r.cx() - 9.0, r.cy() - 9.0, 18.0, 18.0)),
         }
     }
 
@@ -1830,11 +1753,7 @@ impl App {
             TIcon::G(ch) => g.icon(*ch, ir, 14.0, t.accent),
             TIcon::Txt(s) => g.text(s, ir, 12.5, 700, t.accent, Al::C),
             TIcon::Battery(f, ch) => draw_battery(g, ir.cx() - 10.0, ir.cy(), 18.0, 10.0, *f, *ch),
-            TIcon::Drop => {
-                if let Some(geo) = g.drop_geo(R::new(ir.cx() - 5.5, ir.cy() - 7.5, 11.0, 15.0)) {
-                    g.fill_geo(&geo, g.legible(g.text_alpha(t.accent)));
-                }
-            }
+            TIcon::Prop(i) => self.draw_prop(g, *i, R::new(ir.cx() - 8.0, ir.cy() - 8.0, 16.0, 16.0)),
         }
         let cat = self.cat_size();
         self.draw_cat(g, c.right() - TWO_PAD - cat, c.bottom() - 4.0);
@@ -1859,7 +1778,13 @@ impl App {
             } else if hv {
                 g.rrect(b, 10.0, surf(g, true));
             }
-            let col = if active { active_icon(g, tab_color(g, *t)) } else if hv { WHITE } else { T3 };
+            if *t == Tab::Pet {
+                // the cat itself, sitting in its tab
+                let k = if active { 1.0 } else if hv { 0.85 } else { 0.55 };
+                self.draw_cat_frame(g, Mood::Idle, 0, R::new(b.cx() - 11.0, b.cy() - 12.0, 22.0, 22.0), k);
+                continue;
+            }
+            let col = if active { active_icon(g, tab_color(*t)) } else if hv { WHITE } else { T3 };
             draw_tab_icon(g, *t, b, col);
         }
         // right: battery, date, clock
@@ -1882,7 +1807,7 @@ impl App {
         // the cat peeks out between the tabs and the clock; click it to pet it
         let tabs_end = inner.x + TABS.len() as f32 * 38.0 - 4.0;
         let cs = self.cat_size();
-        if x - tabs_end >= cs + 4.0 {
+        if tab != Tab::Pet && x - tabs_end >= cs + 4.0 {
             let r = self.draw_cat(g, (tabs_end + x - cs) / 2.0, inner.y + 28.0);
             ui.hit(r, Act::Pet);
         }
@@ -1914,9 +1839,8 @@ impl App {
         let inner = R::new(c.x + 18.0, c.y + 12.0, c.w - 36.0, c.h - 26.0);
         let body = R::new(inner.x, inner.y + 42.0, inner.w, inner.h - 42.0);
         match tab {
+            Tab::Pet => self.draw_pet(g, ui, body),
             Tab::Media => self.draw_media(g, ui, body, lyr),
-            Tab::Focus => self.draw_focus(g, ui, body),
-            Tab::Water => self.draw_water(g, ui, body),
             Tab::Shelf => self.draw_shelf(g, ui, body),
             Tab::Tasks => self.draw_tasks(g, ui, body),
             Tab::Clipboard => self.draw_clipboard(g, ui, body),
@@ -2057,157 +1981,6 @@ impl App {
                 g.text("Lyrics come from lrclib.net", R::new(a.x, a.cy() + 2.0, a.w, 18.0), 11.5, 400, T3, Al::C);
             }
         }
-    }
-
-    fn draw_focus(&self, g: &Gfx, ui: &mut Ui, c: R) {
-        let p = &self.pomo;
-        let col = self.pomo_color();
-        let total = if p.active() { p.total } else { self.data.focus.focus_min as f64 * 60.0 };
-        let rem = if p.active() { p.remaining() } else { total };
-        let (rcx, rcy, rad) = (c.x + 58.0, c.y + 58.0, 52.0);
-        g.circle_stroke(rcx, rcy, rad, WHITE.a(0.09), 7.0);
-        g.arc(rcx, rcy, rad, (rem / total.max(1.0)) as f32, 7.0, col);
-        g.text(&mmss(rem), R::new(rcx - 50.0, rcy - 17.0, 100.0, 30.0), 24.0, 600, WHITE, Al::C);
-        let label = match (p.mode, p.paused) {
-            (PMode::Idle, _) => "READY",
-            (_, true) => "PAUSED",
-            (PMode::Focus, _) => "FOCUS",
-            (PMode::Break, _) => "BREAK",
-        };
-        g.text(label, R::new(rcx - 50.0, rcy + 12.0, 100.0, 14.0), 10.0, 700, if p.paused { T3 } else { col }, Al::C);
-
-        let x = c.x + 140.0;
-        let w = c.right() - x;
-        let title = match p.mode {
-            PMode::Idle => "Ready to focus",
-            PMode::Focus => "Deep focus",
-            PMode::Break => "Take a breather",
-        };
-        g.text(title, R::new(x, c.y, w, 22.0), 16.0, 600, WHITE, Al::L);
-        let s = self.data.focus.sessions;
-        g.text(
-            &format!("{} session{} completed today", s, if s == 1 { "" } else { "s" }),
-            R::new(x, c.y + 22.0, w, 18.0),
-            12.0,
-            400,
-            T2,
-            Al::L,
-        );
-        let by = c.y + 50.0;
-        let btxt = match (p.mode, p.paused) {
-            (PMode::Idle, _) => "Start focus",
-            (_, true) => "Resume",
-            _ => "Pause",
-        };
-        let b = R::new(x, by, 118.0, 34.0);
-        let hv = ui.hit(b, Act::FocusToggle);
-        let ac = accent_btn(g, col);
-        g.rrect(b, 17.0, if hv { ac } else { ac.a(0.85) });
-        g.text(btxt, b, 13.0, 600, accent_fg(g), Al::C);
-        icon_btn(g, ui, R::new(x + 126.0, by, 34.0, 34.0), ic::RESET, 14.0, WHITE, Act::FocusReset, true);
-        icon_btn(g, ui, R::new(x + 166.0, by, 34.0, 34.0), ic::NEXT, 14.0, WHITE, Act::FocusSkip, true);
-
-        let sy = c.y + 98.0;
-        let fw = stepper(g, ui, x, sy, "Focus", &format!("{} min", self.data.focus.focus_min), Act::FocusLen(false, -5), Act::FocusLen(false, 5), Field::FocusMin, self.edit_of(Field::FocusMin));
-        stepper(g, ui, x + fw + 16.0, sy, "Break", &format!("{} min", self.data.focus.break_min), Act::FocusLen(true, -1), Act::FocusLen(true, 1), Field::BreakMin, self.edit_of(Field::BreakMin));
-    }
-
-    fn next_water_in(&self) -> Option<i64> {
-        let w = &self.data.water;
-        if w.total() >= w.goal_ml {
-            return None;
-        }
-        let iv = w.interval_min as i64 * 60;
-        let el = self.water_mark.elapsed().as_secs() as i64;
-        Some(((iv - el).max(0) + 59) / 60)
-    }
-
-    fn draw_water(&self, g: &Gfx, ui: &mut Ui, c: R) {
-        let w = &self.data.water;
-        let total = w.total();
-        let f = (total as f32 / w.goal_ml.max(1) as f32).min(1.0);
-        let dr = R::new(c.x + 6.0, c.y + 2.0, 74.0, 98.0);
-        if let Some(geo) = g.drop_geo(dr) {
-            g.fill_geo(&geo, WHITE.a(0.07));
-            g.push_geo(&geo, 1.0);
-            let fh = dr.h * f;
-            g.rect(R::new(dr.x - 2.0, dr.bottom() - fh, dr.w + 4.0, fh + 2.0), WATER_C.a(0.9));
-            g.pop();
-            g.stroke_geo(&geo, WATER_C.a(0.5), 1.5);
-        }
-        g.text(&format!("{}%", (f * 100.0).round() as i32), R::new(dr.x, dr.y + 50.0, dr.w, 22.0), 14.0, 700, WHITE, Al::C);
-
-        let x = c.x + 104.0;
-        let cw = c.right() - x;
-        let big = format!("{total} ml");
-        g.text(&big, R::new(x, c.y - 2.0, cw, 30.0), 24.0, 600, WHITE, Al::L);
-        let bw = g.measure(&big, 24.0, 600);
-        g.text(&format!("of {} ml", w.goal_ml), R::new(x + bw + 8.0, c.y + 4.0, cw, 22.0), 13.0, 400, T2, Al::L);
-        let bar = R::new(x, c.y + 34.0, cw, 6.0);
-        g.rrect(bar, 3.0, WHITE.a(0.12));
-        if f > 0.0 {
-            g.rrect(R::new(bar.x, bar.y, (bar.w * f).max(6.0), 6.0), 3.0, WATER_C);
-        }
-        let note = match self.next_water_in() {
-            None => "Daily goal reached — nice work!".to_string(),
-            Some(_) if !w.remind => format!("Reminders off · {} drinks today", w.log.len()),
-            Some(m) => format!("Next reminder in {m} min · {} drinks today", w.log.len()),
-        };
-        // reminders on/off: a small switch at the top right
-        {
-            let on = w.remind;
-            let sr = R::new(c.right() - 112.0, c.y + 2.0, 112.0, 24.0);
-            let hv = ui.hit(sr, Act::WaterRemind);
-            if hv {
-                g.rrect(sr, 12.0, surf(g, false));
-            }
-            g.text("Reminders", R::new(sr.x + 8.0, sr.y, 64.0, sr.h), 11.5, 500, btn_fg(g, if on { T2 } else { T3 }), Al::L);
-            let track = R::new(sr.right() - 38.0, sr.cy() - 8.0, 30.0, 16.0);
-            g.rrect(track, 8.0, if on { accent_btn(g, WATER_C) } else { WHITE.a(0.22) });
-            let kx = if on { track.right() - 8.0 } else { track.x + 8.0 };
-            g.circle(kx, track.cy(), 6.0, if on { accent_fg(g) } else { WHITE.a(0.9) });
-        }
-        g.text(&note, R::new(x, c.y + 44.0, cw, 18.0), 11.5, 400, T3, Al::L);
-
-        let by = c.y + 68.0;
-        let b1 = R::new(x, by, 86.0, 32.0);
-        let hv1 = ui.hover(b1);
-        pill_btn(g, ui, b1, "+250 ml", btn_fg(g, WHITE), surf(g, hv1), Act::WaterAdd(250));
-        let b2 = R::new(x + 94.0, by, 150.0, 32.0);
-        pill_btn(g, ui, b2, &format!("+ Bottle · {} ml", w.bottle_ml), accent_fg(g), accent_btn(g, WATER_C), Act::WaterAdd(w.bottle_ml));
-        let mut cx2 = x + 252.0;
-        if !w.log.is_empty() {
-            icon_btn(g, ui, R::new(cx2, by, 34.0, 32.0), ic::UNDO, 14.0, WHITE, Act::WaterUndo, true);
-            cx2 += 42.0;
-        }
-        // type any amount, Enter logs it
-        let cr = R::new(cx2, by, (c.right() - cx2).min(80.0), 32.0);
-        let ch = ui.hit(cr, Act::Edit(Field::DrinkMl));
-        match self.edit_of(Field::DrinkMl) {
-            Some((buf, caret)) => {
-                g.rrect(cr, 16.0, WHITE.a(0.12));
-                g.rrect_stroke(cr.inset(0.5, 0.5), 15.5, WATER_C.a(0.7), 1.2, false);
-                let txt = format!("{buf} ml");
-                let tw = g.measure(&txt, 12.5, 600);
-                let tx = cr.cx() - tw / 2.0;
-                g.text(&txt, R::new(tx, cr.y, tw + 4.0, cr.h), 12.5, 600, WHITE, Al::L);
-                if caret {
-                    let bw = g.measure(buf, 12.5, 600);
-                    g.line(tx + bw + 1.0, cr.cy() - 7.0, tx + bw + 1.0, cr.cy() + 7.0, 1.3, WATER_C);
-                }
-            }
-            None => {
-                g.rrect(cr, 16.0, surf(g, ch));
-                g.text("Custom", cr, 12.5, 600, btn_fg(g, T2), Al::C);
-            }
-        }
-
-        let sy = c.y + 114.0;
-        let mut sx = c.x;
-        sx += stepper(g, ui, sx, sy, "Bottle", &format!("{} ml", w.bottle_ml), Act::WaterSet(0, -50), Act::WaterSet(0, 50), Field::Bottle, self.edit_of(Field::Bottle)) + 14.0;
-        let goal = format!("{:.2} L", w.goal_ml as f32 / 1000.0);
-        sx += stepper(g, ui, sx, sy, "Goal", goal.trim_end_matches('0'), Act::WaterSet(1, -250), Act::WaterSet(1, 250), Field::Goal, self.edit_of(Field::Goal)) + 14.0;
-        stepper(g, ui, sx, sy, "Every", &format!("{} min", w.interval_min), Act::WaterSet(2, -15), Act::WaterSet(2, 15), Field::Interval, self.edit_of(Field::Interval));
     }
 
     fn draw_shelf(&self, g: &Gfx, ui: &mut Ui, c: R) {
@@ -2383,14 +2156,7 @@ impl App {
             return;
         }
         self.commit_edit();
-        let w = &self.data.water;
         let buf = match f {
-            Field::FocusMin => self.data.focus.focus_min.to_string(),
-            Field::BreakMin => self.data.focus.break_min.to_string(),
-            Field::Bottle => w.bottle_ml.to_string(),
-            Field::Goal => w.goal_ml.to_string(),
-            Field::Interval => w.interval_min.to_string(),
-            Field::DrinkMl => String::new(),
             Field::TaskTime => self.draft_due().map(hm).unwrap_or_default(),
         };
         self.edit = Some(Edit { field: f, buf, fresh: true });
@@ -2411,29 +2177,6 @@ impl App {
                     self.task_due = v;
                     self.follow_due();
                 }
-            }
-            f => {
-                let Some(v) = parse_amount(&t, f == Field::Goal || f == Field::Bottle) else { return };
-                let w = &mut self.data.water;
-                match f {
-                    Field::FocusMin => self.data.focus.focus_min = v.clamp(1, 180),
-                    Field::BreakMin => self.data.focus.break_min = v.clamp(1, 60),
-                    Field::Bottle => w.bottle_ml = v.clamp(50, 3000),
-                    Field::Goal => w.goal_ml = v.clamp(250, 10000),
-                    Field::Interval => w.interval_min = v.clamp(5, 480),
-                    Field::DrinkMl => {
-                        if v > 0 {
-                            let before = w.total();
-                            w.log.push(v.min(3000));
-                            if before < w.goal_ml && w.total() >= w.goal_ml {
-                                sound::chime();
-                            }
-                            self.water_mark = Instant::now();
-                        }
-                    }
-                    Field::TaskTime => {}
-                }
-                self.dirty = true;
             }
         }
         self.kick();
@@ -2902,68 +2645,6 @@ impl App {
                     let _ = self.media_tx.send(MediaCmd::Seek(t));
                 }
             }
-            Act::FocusToggle => {
-                let n = Instant::now();
-                match self.pomo.mode {
-                    PMode::Idle => self.start_phase(PMode::Focus),
-                    _ if self.pomo.paused => {
-                        self.pomo.end = n + Duration::from_secs_f64(self.pomo.left);
-                        self.pomo.paused = false;
-                    }
-                    _ => {
-                        self.pomo.left = self.pomo.remaining();
-                        self.pomo.paused = true;
-                    }
-                }
-            }
-            Act::FocusReset => self.pomo.mode = PMode::Idle,
-            Act::FocusSkip => {
-                if self.pomo.active() {
-                    self.finish_phase(false);
-                } else {
-                    self.start_phase(PMode::Break);
-                }
-            }
-            Act::FocusLen(brk, d) => {
-                let f = &mut self.data.focus;
-                if brk {
-                    f.break_min = (f.break_min as i32 + d).clamp(1, 60) as u32;
-                } else {
-                    f.focus_min = (f.focus_min as i32 + d).clamp(5, 120) as u32;
-                }
-                self.dirty = true;
-            }
-            Act::WaterAdd(ml) => {
-                let before = self.data.water.total();
-                self.data.water.log.push(ml);
-                self.water_mark = Instant::now();
-                self.dirty = true;
-                let w = &self.data.water;
-                if before < w.goal_ml && w.total() >= w.goal_ml {
-                    sound::chime();
-                }
-                self.cheer();
-            }
-            Act::WaterRemind => {
-                let w = &mut self.data.water;
-                w.remind = !w.remind;
-                // turning them back on starts a fresh interval instead of pinging right away
-                self.water_mark = Instant::now();
-                self.dirty = true;
-            }
-            Act::WaterUndo => {
-                self.data.water.log.pop();
-                self.dirty = true;
-            }
-            Act::WaterSet(which, d) => {
-                let w = &mut self.data.water;
-                match which {
-                    0 => w.bottle_ml = (w.bottle_ml as i32 + d).clamp(100, 2000) as u32,
-                    1 => w.goal_ml = (w.goal_ml as i32 + d).clamp(500, 6000) as u32,
-                    _ => w.interval_min = (w.interval_min as i32 + d).clamp(15, 240) as u32,
-                }
-                self.dirty = true;
-            }
             Act::ShelfItem(i) => {
                 // Ctrl+click, or any click while something is selected, toggles selection
                 let ctrl = unsafe { GetKeyState(VK_CONTROL.0 as i32) } < 0;
@@ -3046,9 +2727,16 @@ impl App {
                 }
                 if done {
                     self.cheer();
+                    let ups = self.data.pet.gain(care::XP_TASK);
+                    self.on_levels(ups);
                 }
             }
             Act::Pet => self.pet_cat(),
+            Act::Care(need) => self.care_for(need),
+            Act::Room(step) => {
+                self.data.pet.next_room(step);
+                self.dirty = true;
+            }
             Act::TaskDel(id) => {
                 self.data.tasks.retain(|t| t.id != id);
                 self.dirty = true;
@@ -3156,44 +2844,6 @@ impl App {
         self.dirty = true;
     }
 
-    fn start_phase(&mut self, m: PMode) {
-        let mins = if m == PMode::Break { self.data.focus.break_min } else { self.data.focus.focus_min };
-        let secs = mins as f64 * 60.0;
-        self.pomo = Pomo {
-            mode: m,
-            end: Instant::now() + Duration::from_secs_f64(secs),
-            left: secs,
-            total: secs,
-            paused: false,
-        };
-    }
-
-    fn finish_phase(&mut self, natural: bool) {
-        match self.pomo.mode {
-            PMode::Focus => {
-                if natural {
-                    self.data.focus.sessions += 1;
-                    self.dirty = true;
-                }
-                self.start_phase(PMode::Break);
-                if natural {
-                    sound::chime();
-                    self.cheer();
-                    let msg = format!("Time for a {}-minute break", self.data.focus.break_min);
-                    self.toast(TIcon::G(ic::TIMER), "Focus session complete", &msg, 8.0, self.break_color(), Some(Tab::Focus));
-                }
-            }
-            PMode::Break => {
-                self.pomo.mode = PMode::Idle;
-                if natural {
-                    sound::chime();
-                    self.toast(TIcon::G(ic::TIMER), "Break's over", "Ready for another focus session?", 8.0, self.focus_color(), Some(Tab::Focus));
-                }
-            }
-            PMode::Idle => {}
-        }
-    }
-
     // -------------------------------------------------------------- periodic
 
     pub fn tick(&mut self) {
@@ -3243,16 +2893,13 @@ impl App {
                 }
                 // previews come back (decoded again) the next time the Shelf opens
                 self.thumbs.clear();
+                self.room_bmp = None;
                 crate::util::trim_memory();
                 dbg_log("memory: trimmed");
                 if std::env::var_os("PATPET_DEBUG").is_some() {
                     dbg_log(&crate::util::heap_stats());
                 }
             }
-        }
-        if self.pomo.active() && !self.pomo.paused && self.pomo.remaining() <= 0.0 {
-            self.finish_phase(true);
-            redraw = true;
         }
 
         if let Some((at, k)) = self.demo_stress {
@@ -3271,8 +2918,6 @@ impl App {
                     self.ensure_lyrics();
                 } else if k % 2 == 0 {
                     self.collapse();
-                } else if mode == "water" {
-                    self.expand(Some(Tab::Water));
                 } else {
                     self.lyrics_open = true;
                     if mode != "toggle" {
@@ -3293,7 +2938,7 @@ impl App {
         if let Some(at) = self.demo_switch {
             if n >= at {
                 self.demo_switch = None;
-                self.tab = Tab::Focus;
+                self.tab = Tab::Tasks;
                 self.kick();
             }
         }
@@ -3382,21 +3027,19 @@ impl App {
             self.last_min = minute;
             redraw = true;
         }
-        let periodic = (compact && (playing || self.pomo.active() || self.task_soon().is_some()))
+        let periodic = (compact && (playing || self.task_soon().is_some()))
             || (self.expanded
                 && match self.tab {
                     Tab::Media => playing,
-                    Tab::Focus => self.pomo.active(),
                     Tab::Tasks => self.input_focus || self.edit.is_some(),
                     _ if self.edit.is_some() => true,
                     _ => false,
                 });
         let fast = (compact && playing) || (self.expanded && self.tab == Tab::Media && self.lyrics_open && playing);
         // the cat: what it is up to, and a redraw whenever its animation moves on a frame
-        let focusing = self.pomo.mode == PMode::Focus && !self.pomo.paused;
         self.pet.set_music(playing, n);
-        self.pet.set_focus(focusing, false, n);
         self.pet.tick(n, system::user_idle(), now().h as u32);
+        self.wander(n);
         let cat_shown = self.cat_visible();
         if cat_shown && self.pet.frame(n) != self.cat_frame {
             redraw = true;
@@ -3416,27 +3059,10 @@ impl App {
         // hide during full-screen apps / presentations; reminders wait until it is back
         self.apply_visibility();
         let t = now();
-        let today = t.date();
-        if self.data.water.date != today {
-            self.data.water.date = today.clone();
-            self.data.water.log.clear();
-            self.dirty = true;
-        }
-        if self.data.focus.date != today {
-            self.data.focus.date = today;
-            self.data.focus.sessions = 0;
-            self.dirty = true;
-        }
 
-        // water reminder (07:00–22:59)
-        let w = &self.data.water;
-        let iv = Duration::from_secs(w.interval_min as u64 * 60);
-        if w.remind && !self.hidden && (7..23).contains(&t.h) && w.total() < w.goal_ml && self.water_mark.elapsed() >= iv {
-            self.water_mark = Instant::now();
-            let msg = format!("{} / {} ml today · tap to log", w.total(), w.goal_ml);
-            sound::chime();
-            self.toast(TIcon::Drop, "Time to drink some water", &msg, 10.0, WATER_C, Some(Tab::Water));
-        }
+        // the cat's needs run down; a gentle notice when one is running low
+        self.sync_care();
+        self.need_notice();
 
         // task reminders: 1 day, 6 h, 3 h, 1 h and 30 min before, and when due. Not while
         // hidden (full-screen game, video or presentation): they come once it is back.
@@ -4242,26 +3868,101 @@ impl App {
         self.hearts_at.map(|t| t.elapsed().as_secs_f32() < HEARTS_SECS).unwrap_or(false)
     }
 
-    /// Bitmaps for the sprite strips (made once) and the frame to draw now.
+    /// Bitmaps for the sprite strips (made once), the room while the Pet tab is open, the
+    /// cat's walk, and the frame to draw now.
     fn sync_cat(&mut self) {
         if self.cat_bmps.is_empty() {
             let strips = std::mem::take(&mut self.cat_strips);
             self.cat_bmps = strips.iter().map(|s| s.as_ref().and_then(|s| self.gfx.create_bitmap(s.w, s.h, &s.px))).collect();
+            self.props_bmp = crate::sprites::props().and_then(|s| self.gfx.create_bitmap(s.w, s.h, &s.px));
         }
-        self.cat_frame = self.pet.frame(Instant::now());
+        if self.expanded && self.tab == Tab::Pet {
+            let i = self.data.pet.room_index();
+            if self.room_bmp.as_ref().map(|(k, _)| *k) != Some(i) {
+                self.room_bmp = crate::sprites::room(i).and_then(|s| self.gfx.create_bitmap(s.w, s.h, &s.px)).map(|b| (i, b));
+            }
+        }
+        let n = Instant::now();
+        let dt = n.duration_since(self.room_step).as_secs_f32().min(0.25);
+        self.room_step = n;
+        if let Some(goal) = self.room_goal {
+            if self.pet.is_walking() {
+                let d = goal - self.room_x;
+                let step = WALK_SPEED * dt;
+                self.room_x = if d.abs() <= step { goal } else { self.room_x + step * d.signum() };
+            }
+        }
+        self.cat_frame = self.pet.frame(n);
+    }
+
+    /// The cat strolls around its room now and then while the Pet tab is open.
+    fn wander(&mut self, n: Instant) {
+        let in_room = self.expanded && self.tab == Tab::Pet;
+        if !in_room {
+            if self.room_goal.take().is_some() {
+                self.pet.set_walking(false, n);
+            }
+            return;
+        }
+        match self.room_goal {
+            Some(goal) if (goal - self.room_x).abs() < 0.001 => {
+                self.room_goal = None;
+                self.pet.set_walking(false, n);
+                let r = self.random();
+                self.room_rest = n + Duration::from_millis(4000 + (r % 7000) as u64);
+            }
+            None if n >= self.room_rest => {
+                let r = self.random();
+                // somewhere else in the room, at least a little way off
+                let mut goal = 0.08 + (r % 1000) as f32 / 1000.0 * 0.84;
+                if (goal - self.room_x).abs() < 0.2 {
+                    goal = if self.room_x > 0.5 { goal - 0.4 } else { goal + 0.4 }.clamp(0.08, 0.92);
+                }
+                self.room_goal = Some(goal);
+                self.room_step = n;
+                self.pet.set_walking(true, n);
+            }
+            _ => {}
+        }
+    }
+
+    fn random(&mut self) -> u32 {
+        let mut x = self.room_rng ^ (Instant::now().duration_since(self.t0).subsec_nanos());
+        x ^= x << 13;
+        x ^= x >> 17;
+        x ^= x << 5;
+        self.room_rng = x;
+        x
+    }
+
+    /// One frame of a cat animation into `r`, at `opacity`.
+    fn draw_cat_frame(&self, g: &Gfx, mood: Mood, i: usize, r: R, opacity: f32) {
+        if let Some(Some(b)) = self.cat_bmps.get(crate::sprites::index(mood)) {
+            let f = crate::sprites::FRAME as f32;
+            g.sprite(b, R::new(i as f32 * f, 0.0, f, f), r, opacity);
+        }
+    }
+
+    /// A prop icon (props.png) into `r`.
+    fn draw_prop(&self, g: &Gfx, i: usize, r: R) {
+        if let Some(b) = &self.props_bmp {
+            let f = crate::sprites::PROP as f32;
+            g.sprite(b, R::new(i as f32 * f, 0.0, f, f), r, 1.0);
+        }
     }
 
     /// Draws the cat with its left edge at `x`, standing on `bottom`; returns where it went.
     fn draw_cat(&self, g: &Gfx, x: f32, bottom: f32) -> R {
         let size = self.cat_size();
         let px = |v: f32| (v * g.scale).round() / g.scale;
-        let r = R::new(px(x), px(bottom - size), size, size);
+        self.draw_cat_in(g, R::new(px(x), px(bottom - size), size, size))
+    }
+
+    /// Draws the cat (current frame, hearts if happy) filling `r`; returns `r`.
+    fn draw_cat_in(&self, g: &Gfx, r: R) -> R {
         self.cat_rect.set(Some(r));
         let (mood, i) = self.cat_frame;
-        if let Some(Some(b)) = self.cat_bmps.get(crate::sprites::index(mood)) {
-            let f = crate::sprites::FRAME as f32;
-            g.sprite(b, R::new(i as f32 * f, 0.0, f, f), r, 1.0);
-        }
+        self.draw_cat_frame(g, mood, i, r, 1.0);
         if let Some(t) = self.hearts_at {
             // three little hearts float up from the cat and fade
             let e = t.elapsed().as_secs_f32();
@@ -4294,7 +3995,171 @@ impl App {
         let n = Instant::now();
         if self.pet.click(n) {
             self.hearts_at = Some(n);
+            self.sync_care();
+            let ups = self.data.pet.pet();
+            self.dirty = true;
+            self.on_levels(ups);
             self.kick();
+        }
+    }
+
+    // -------------------------------------------------------------- caring for the cat
+
+    /// Bring the needs up to date and tell the cat how it is doing.
+    fn sync_care(&mut self) {
+        let asleep = system::user_idle() >= CAT_SLEEP_AFTER;
+        self.data.pet.advance(unix_now(), asleep);
+        let c = &self.data.pet;
+        self.pet.set_care(c.nap, c.lowest(), Instant::now());
+    }
+
+    /// A card in the Pet tab: feed, play, put to bed / wake up, bath.
+    fn care_for(&mut self, need: Need) {
+        self.sync_care();
+        let n = Instant::now();
+        let c = &mut self.data.pet;
+        let ups = match need {
+            Need::Food => {
+                self.pet.act(Action::Feed, n);
+                c.feed()
+            }
+            Need::Fun => {
+                self.pet.act(Action::Play, n);
+                c.play()
+            }
+            Need::Energy => {
+                c.toggle_nap();
+                0
+            }
+            Need::Clean => {
+                self.pet.act(Action::Bath, n);
+                c.bath()
+            }
+        };
+        self.dirty = true;
+        self.sync_care();
+        self.on_levels(ups);
+        self.kick();
+    }
+
+    /// The cat went up `ups` levels: it celebrates, and a notice says what opened up.
+    fn on_levels(&mut self, ups: u32) {
+        if ups == 0 {
+            return;
+        }
+        let level = self.data.pet.level;
+        self.pet.act(Action::LevelUp, Instant::now());
+        let new_room = care::ROOMS.iter().find(|r| r.2 > level - ups && r.2 <= level);
+        let sub = match new_room {
+            Some(r) => format!("New room unlocked: {}", r.1),
+            None => match care::ROOMS.iter().find(|r| r.2 > level) {
+                Some(r) => format!("Next room at level {}", r.2),
+                None => "Every room is open".to_string(),
+            },
+        };
+        self.toast(TIcon::Prop(prop::STAR), &format!("Level {level}!"), &sub, 6.0, TASK_C, Some(Tab::Pet));
+        self.kick();
+    }
+
+    /// Now and then, a gentle word when a need is running low (not while the Pet tab is open).
+    fn need_notice(&mut self) {
+        let Some(need) = self.data.pet.lowest() else { return };
+        let t = unix_now();
+        if self.hidden || self.demo || (self.expanded && self.tab == Tab::Pet) || t - self.data.pet.noticed < NEED_NOTICE_EVERY {
+            return;
+        }
+        self.data.pet.noticed = t;
+        self.dirty = true;
+        let (icon, title, sub) = match need {
+            Need::Food => (prop::FISH, "Your cat is hungry", "Tap to feed it"),
+            Need::Fun => (prop::RAIN, "Your cat is bored", "Tap to play together"),
+            Need::Energy => (prop::ZZZ, "Your cat is sleepy", "Tap to put it to bed"),
+            Need::Clean => (prop::DIRT, "Your cat needs a bath", "Tap to give it one"),
+        };
+        self.toast(TIcon::Prop(icon), title, sub, 8.0, HEART_C, Some(Tab::Pet));
+    }
+
+    /// The Pet tab: the cat's room, its level, and the four care cards.
+    fn draw_pet(&self, g: &Gfx, ui: &mut Ui, c: R) {
+        let care = &self.data.pet;
+        let room = R::new(c.x, c.y, c.w, ROOM_H);
+        g.push_rr(room, 12.0, 1.0);
+        match &self.room_bmp {
+            Some((_, b)) => {
+                let (w, h) = (crate::sprites::ROOM_W as f32, crate::sprites::ROOM_H as f32);
+                g.sprite(b, R::new(0.0, 0.0, w, h), R::new(room.x, room.y, w * ROOM_SCALE, h * ROOM_SCALE), 1.0);
+            }
+            None => g.rect(room, SURF),
+        }
+        if care.nap {
+            // lights out
+            g.rect(room, C(0.02, 0.03, 0.10, 0.55));
+        }
+        // the cat, standing on the floor (whole screen pixels so it stays crisp)
+        let size = crate::sprites::FRAME as f32 * ROOM_SCALE;
+        let px = |v: f32| (v * g.scale).round() / g.scale;
+        let floor = room.y + crate::sprites::ROOM_FLOOR as f32 * ROOM_SCALE;
+        let cx = room.x + 6.0 + self.room_x * (room.w - size - 12.0);
+        let cat = self.draw_cat_in(g, R::new(px(cx), px(floor - size), size, size));
+        ui.hit(cat, Act::Pet);
+
+        // level and experience, top left
+        let chip = R::new(room.x + 8.0, room.y + 8.0, 150.0, 24.0);
+        g.rrect(chip, 12.0, C(0.0, 0.0, 0.0, 0.5));
+        self.draw_prop(g, prop::STAR, R::new(chip.x + 6.0, chip.cy() - 7.0, 14.0, 14.0));
+        g.text(&format!("Level {}", care.level), R::new(chip.x + 25.0, chip.y, 60.0, chip.h), 12.0, 700, PURE_WHITE, Al::L);
+        let bar = R::new(chip.x + 84.0, chip.cy() - 2.5, chip.w - 94.0, 5.0);
+        g.rrect(bar, 2.5, C(1.0, 1.0, 1.0, 0.2));
+        let f = care.xp as f32 / care::xp_for(care.level) as f32;
+        g.rrect(R::new(bar.x, bar.y, (bar.w * f.clamp(0.0, 1.0)).max(5.0), bar.h), 2.5, TASK_C);
+
+        // the room's name, top right; arrows when more than one room is open
+        let open = care::rooms_open(care.level);
+        let ri = care.room_index();
+        let name = care::ROOMS[ri].1;
+        let label = match care::ROOMS.get(open) {
+            Some(next) if open == 1 => format!("{name} · next at level {}", next.2),
+            _ => name.to_string(),
+        };
+        let tw = g.measure(&label, 11.5, 600);
+        let arrows = if open > 1 { 44.0 } else { 0.0 };
+        let rc = R::new(room.right() - 8.0 - tw - 20.0 - arrows, room.y + 8.0, tw + 20.0 + arrows, 24.0);
+        g.rrect(rc, 12.0, C(0.0, 0.0, 0.0, 0.5));
+        g.text(&label, R::new(rc.x + 10.0 + arrows / 2.0, rc.y, tw + 2.0, rc.h), 11.5, 600, C(1.0, 1.0, 1.0, 0.86), Al::L);
+        if open > 1 {
+            for (k, (ch, step)) in [(ic::LEFT, -1), (ic::RIGHT, 1)].into_iter().enumerate() {
+                let b = if k == 0 { R::new(rc.x + 2.0, rc.y + 2.0, 20.0, 20.0) } else { R::new(rc.right() - 22.0, rc.y + 2.0, 20.0, 20.0) };
+                let hv = ui.hit(b, Act::Room(step));
+                if hv {
+                    g.circle(b.cx(), b.cy(), 10.0, C(1.0, 1.0, 1.0, 0.18));
+                }
+                g.icon(ch, b, 9.0, PURE_WHITE);
+            }
+        }
+        g.pop();
+
+        // the care cards
+        let y = room.bottom() + 10.0;
+        let gap = 8.0;
+        let w = (c.w - 3.0 * gap) / 4.0;
+        let cards = [
+            (Need::Food, prop::BOWL, "Feed", C::hex(0xFFB86B)),
+            (Need::Fun, prop::YARN, "Play", HEART_C),
+            (Need::Energy, prop::BOLT, if care.nap { "Wake" } else { "Sleep" }, C::hex(0xFFD60A)),
+            (Need::Clean, prop::SOAP, "Bath", CLIP_C),
+        ];
+        for (k, (need, icon, label, col)) in cards.into_iter().enumerate() {
+            let r = R::new(c.x + k as f32 * (w + gap), y, w, 46.0);
+            let hv = ui.hit(r, Act::Care(need));
+            g.rrect(r, 12.0, surf(g, hv));
+            self.draw_prop(g, icon, R::new(r.x + 9.0, r.y + 7.0, 16.0, 16.0));
+            g.text(label, R::new(r.x + 31.0, r.y + 5.0, r.w - 66.0, 20.0), 12.5, 600, WHITE, Al::L);
+            let v = care.value(need);
+            g.text(&format!("{}%", v.round() as i32), R::new(r.right() - 46.0, r.y + 5.0, 37.0, 20.0), 11.0, 500, T3, Al::R);
+            let bar = R::new(r.x + 10.0, r.y + 31.0, r.w - 20.0, 6.0);
+            g.rrect(bar, 3.0, WHITE.a(0.12));
+            let col = if v < care::LOW { RED } else { col };
+            g.rrect(R::new(bar.x, bar.y, (bar.w * v / 100.0).max(6.0), bar.h), 3.0, col);
         }
     }
 
@@ -4430,11 +4295,10 @@ impl App {
 
 // ------------------------------------------------------------------ widgets
 
-fn tab_color(g: &Gfx, t: Tab) -> C {
+fn tab_color(t: Tab) -> C {
     match t {
+        Tab::Pet => HEART_C,
         Tab::Media => WHITE,
-        Tab::Focus => g.theme.timer.unwrap_or(FOCUS_C),
-        Tab::Water => WATER_C,
         Tab::Shelf => SHELF_C,
         Tab::Tasks => TASK_C,
         Tab::Clipboard => CLIP_C,
@@ -4443,13 +4307,9 @@ fn tab_color(g: &Gfx, t: Tab) -> C {
 
 fn draw_tab_icon(g: &Gfx, t: Tab, r: R, col: C) {
     match t {
+        // drawn by draw_expanded (it is the cat itself)
+        Tab::Pet => {}
         Tab::Media => g.icon(ic::MUSIC, r, 14.0, col),
-        Tab::Focus => g.icon(ic::TIMER, r, 14.0, col),
-        Tab::Water => {
-            if let Some(geo) = g.drop_geo(R::new(r.cx() - 5.5, r.cy() - 7.5, 11.0, 15.0)) {
-                g.fill_geo(&geo, g.legible(g.text_alpha(g.icon_color(col))));
-            }
-        }
         Tab::Shelf => g.icon(ic::FOLDER, r, 14.0, col),
         Tab::Tasks => g.icon(ic::TASKS, r, 14.0, col),
         Tab::Clipboard => g.icon(ic::CLIP, r, 14.0, col),
@@ -4543,40 +4403,6 @@ fn icon_btn(g: &Gfx, ui: &mut Ui, r: R, ch: char, size: f32, col: C, act: Act, b
     g.icon(ch, r, size, btn_icon(g, col));
 }
 
-fn pill_btn(g: &Gfx, ui: &mut Ui, r: R, text: &str, fg: C, bg: C, act: Act) {
-    let hv = ui.hit(r, act);
-    let bg = if hv { bg.mix(WHITE, 0.15) } else { bg };
-    g.rrect(r, r.h / 2.0, bg);
-    g.text(text, r, 12.5, 600, fg, Al::C);
-}
-
-/// "Label  [−] value [+]" — returns total width.
-#[allow(clippy::too_many_arguments)]
-fn stepper(g: &Gfx, ui: &mut Ui, x: f32, y: f32, label: &str, val: &str, minus: Act, plus: Act, field: Field, edit: Option<(&str, bool)>) -> f32 {
-    let lw = g.measure(label, 11.5, 500) + 8.0;
-    g.text(label, R::new(x, y, lw, 26.0), 11.5, 500, T3, Al::L);
-    let bx = x + lw;
-    let box_w = 108.0;
-    let b = R::new(bx, y, box_w, 26.0);
-    g.rrect(b, 9.0, surf(g, false));
-    let mr = R::new(bx, y, 26.0, 26.0);
-    let pr = R::new(bx + box_w - 26.0, y, 26.0, 26.0);
-    let mh = ui.hit(mr, minus);
-    let ph = ui.hit(pr, plus);
-    if mh {
-        g.rrect(mr, 9.0, surf(g, true));
-    }
-    if ph {
-        g.rrect(pr, 9.0, surf(g, true));
-    }
-    g.icon(ic::MINUS, mr, 9.0, btn_icon(g, if mh { WHITE } else { T2 }));
-    g.icon(ic::ADD, pr, 9.0, btn_icon(g, if ph { WHITE } else { T2 }));
-    let vr = R::new(bx + 26.0, y, box_w - 52.0, 26.0);
-    let vh = ui.hit(vr, Act::Edit(field));
-    value_box(g, vr, val, edit, vh, 11.5);
-    lw + box_w
-}
-
 /// A number shown in place; while being edited it becomes a small text box with a caret.
 fn value_box(g: &Gfx, r: R, val: &str, edit: Option<(&str, bool)>, hover: bool, size: f32) {
     match edit {
@@ -4597,24 +4423,6 @@ fn value_box(g: &Gfx, r: R, val: &str, edit: Option<(&str, bool)>, hover: bool, 
             g.text(val, r, size, 600, btn_fg(g, WHITE), Al::C);
         }
     }
-}
-
-/// Whole number; for volumes, "2.5" / "2,5" / "2.5l" mean litres and "500ml" millilitres.
-fn parse_amount(s: &str, volume: bool) -> Option<u32> {
-    let s = s.replace(' ', "").replace(',', ".");
-    if s.is_empty() {
-        return None;
-    }
-    if volume {
-        if let Some(n) = s.strip_suffix("ml") {
-            return n.parse::<f32>().ok().map(|v| v.round() as u32);
-        }
-        let litres = s.ends_with('l') || (s.contains('.') && s.trim_end_matches('l').parse::<f32>().map(|v| v < 20.0).unwrap_or(false));
-        let n = s.trim_end_matches('l').parse::<f32>().ok()?;
-        return Some(if litres { (n * 1000.0).round() as u32 } else { n.round() as u32 });
-    }
-    let digits: String = s.chars().take_while(|c| c.is_ascii_digit()).collect();
-    digits.parse().ok()
 }
 
 /// Task time: "" clears it; "14:30", "14.30", "1430", "9" set a clock time (tomorrow if
@@ -4744,7 +4552,7 @@ pub fn dbg_log(s: &str) {
 
 #[cfg(test)]
 mod tests {
-    use super::{left_label, parse_amount, parse_due, parse_due_on, passed_alerts, reminder_due};
+    use super::{left_label, parse_due, parse_due_on, passed_alerts, reminder_due};
 
     // 2026-11-03 20:00:00 in the naive-local epoch used by the app
     const NOW: i64 = 20760 * 86400 + 20 * 3600;
@@ -4814,17 +4622,5 @@ mod tests {
         assert_eq!(left_label(3600), "in 1 hour");
         assert_eq!(left_label(1800), "in 30 minutes");
         assert_eq!(left_label(40 * 60), "in 40 minutes");
-    }
-
-    #[test]
-    fn amounts() {
-        assert_eq!(parse_amount("330", false), Some(330));
-        assert_eq!(parse_amount("25 min", false), Some(25));
-        assert_eq!(parse_amount("2.5", true), Some(2500));
-        assert_eq!(parse_amount("2,5", true), Some(2500));
-        assert_eq!(parse_amount("1.5l", true), Some(1500));
-        assert_eq!(parse_amount("750ml", true), Some(750));
-        assert_eq!(parse_amount("2000", true), Some(2000));
-        assert_eq!(parse_amount("", true), None);
     }
 }

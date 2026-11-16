@@ -1,6 +1,7 @@
 #![windows_subsystem = "windows"]
 
 mod app;
+mod care;
 mod clip;
 mod events;
 mod gfx;

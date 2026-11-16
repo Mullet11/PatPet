@@ -28,7 +28,7 @@ pub struct Theme {
     pub button_text: Option<C>,
     /// The selected button (open tab). None = a step stronger than `button`.
     pub button_active: Option<C>,
-    /// Main filled buttons (Start focus, + Bottle, add task, Deselect). None = each feature's color.
+    /// Main filled buttons (add task, Deselect). None = each feature's color.
     pub button_accent: Option<C>,
     /// Regular icons (None = the text color).
     pub icon: Option<C>,
@@ -42,9 +42,6 @@ pub struct Theme {
     pub spectrum: Option<C>,
     /// A lyric line under the mouse (None = the album-art color).
     pub lyrics_hover: Option<C>,
-    /// The focus timer while focusing / during a break (None = orange / green).
-    pub timer: Option<C>,
-    pub timer_break: Option<C>,
 }
 
 impl Default for Theme {
@@ -67,8 +64,6 @@ impl Default for Theme {
             audio_bar: None,
             spectrum: None,
             lyrics_hover: None,
-            timer: None,
-            timer_break: None,
         }
     }
 }
@@ -134,7 +129,7 @@ button_text = auto
 # auto = a little stronger than \"button\" (button_hover does not change it)
 button_active = auto
 
-# Main colored buttons (Start focus, + Bottle, add task, Deselect)
+# Main colored buttons (add task, Deselect)
 # auto = keep each feature's own color
 button_accent = auto
 
@@ -159,14 +154,6 @@ icon_active = auto
 audio_bar = auto
 spectrum = auto
 lyrics_hover = auto
-
-# --- Focus timer ------------------------------------------------
-# auto = orange while focusing, green during a break
-# timer       = ring, time and label while focusing (also the closed
-#               island's timer, its notices and the Focus tab icon)
-# timer_break = the same during a break
-timer = auto
-timer_break = auto
 ";
 
 /// Options added after the first release: (where the block starts in `DEFAULT_FILE`, what
@@ -177,8 +164,7 @@ const ADDED: &[(&str, &str)] = &[
     ("# Selected button", "\n# Main colored"),
     ("# Text and icons on those main", "\n# --- Icons"),
     ("# --- Icons", "\n# --- Music"),
-    ("# --- Music", "\n# --- Focus timer"),
-    ("# --- Focus timer", ""),
+    ("# --- Music", ""),
 ];
 
 /// The `ADDED` blocks with every option `cur` already sets left out (so an appended default
@@ -306,8 +292,6 @@ pub fn parse(s: &str) -> Theme {
         audio_bar: opt_color(get("audio_bar")),
         spectrum: opt_color(get("spectrum")),
         lyrics_hover: opt_color(get("lyrics_hover")),
-        timer: opt_color(get("timer")),
-        timer_break: opt_color(get("timer_break")),
     }
 }
 
@@ -544,15 +528,6 @@ mod tests {
             assert!(keys.contains(&k.to_string()), "{k}");
         }
         assert!(!keys.contains(&"icon".to_string()));
-    }
-
-    #[test]
-    fn timer_colors() {
-        let t = parse("timer = #00AAFF");
-        assert_eq!(t.timer, color("#00AAFF"));
-        assert_eq!(t.timer_break, None);
-        let keys: Vec<String> = pairs(&missing_blocks("lyrics_hover = auto")).into_iter().map(|(k, _)| k).collect();
-        assert!(keys.contains(&"timer".to_string()) && keys.contains(&"timer_break".to_string()));
     }
 
     #[test]

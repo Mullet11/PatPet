@@ -1,30 +1,6 @@
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
-#[derive(Serialize, Deserialize, Clone)]
-#[serde(default)]
-pub struct Water {
-    pub bottle_ml: u32,
-    pub goal_ml: u32,
-    pub interval_min: u32,
-    /// drink reminders on/off
-    pub remind: bool,
-    pub date: String,
-    pub log: Vec<u32>,
-}
-
-impl Default for Water {
-    fn default() -> Self {
-        Water { bottle_ml: 500, goal_ml: 2000, interval_min: 60, remind: true, date: String::new(), log: Vec::new() }
-    }
-}
-
-impl Water {
-    pub fn total(&self) -> u32 {
-        self.log.iter().sum()
-    }
-}
-
 #[derive(Serialize, Deserialize, Clone, Default)]
 #[serde(default)]
 pub struct Task {
@@ -36,21 +12,6 @@ pub struct Task {
     pub notified: bool,
     /// early reminders already shown (or skipped), one bit per entry of app::REMINDERS
     pub alerts: u8,
-}
-
-#[derive(Serialize, Deserialize, Clone)]
-#[serde(default)]
-pub struct Focus {
-    pub focus_min: u32,
-    pub break_min: u32,
-    pub date: String,
-    pub sessions: u32,
-}
-
-impl Default for Focus {
-    fn default() -> Self {
-        Focus { focus_min: 25, break_min: 5, date: String::new(), sessions: 0 }
-    }
 }
 
 /// Switches from the tray menu.
@@ -72,8 +33,8 @@ impl Default for Settings {
 #[derive(Serialize, Deserialize, Default)]
 #[serde(default)]
 pub struct Data {
-    pub water: Water,
-    pub focus: Focus,
+    /// the cat: its needs, level and room
+    pub pet: crate::care::Care,
     pub tasks: Vec<Task>,
     pub shelf: Vec<String>,
     pub next_id: u64,

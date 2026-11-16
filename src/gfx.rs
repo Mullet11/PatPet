@@ -409,7 +409,7 @@ impl Gfx {
         }
         let th = &self.theme;
         let same = |u: &C| (u.0 - c.0).abs() < 0.002 && (u.1 - c.1).abs() < 0.002 && (u.2 - c.2).abs() < 0.002;
-        if [th.icon, th.icon_active, th.button_text, th.button_accent_text, th.audio_bar, th.spectrum, th.lyrics_hover, th.timer, th.timer_break].iter().flatten().any(same) {
+        if [th.icon, th.icon_active, th.button_text, th.button_accent_text, th.audio_bar, th.spectrum, th.lyrics_hover].iter().flatten().any(same) {
             return c;
         }
         let l = crate::theme::luma(std::iter::once(c));
@@ -484,67 +484,6 @@ impl Gfx {
         unsafe { self.rt.DrawLine(pt(x0, y0), pt(x1, y1), self.b(c), w, &self.round) }
     }
 
-    /// Progress arc starting at 12 o'clock, clockwise.
-    pub fn arc(&self, cx: f32, cy: f32, rad: f32, frac: f32, w: f32, c: C) {
-        if frac <= 0.002 {
-            return;
-        }
-        if frac >= 0.998 {
-            self.circle_stroke(cx, cy, rad, c, w);
-            return;
-        }
-        let a0 = -std::f32::consts::FRAC_PI_2;
-        let a1 = a0 + frac * std::f32::consts::TAU;
-        unsafe {
-            let Ok(geo) = self.factory.CreatePathGeometry() else { return };
-            let Ok(sink) = geo.Open() else { return };
-            sink.BeginFigure(pt(cx + rad * a0.cos(), cy + rad * a0.sin()), D2D1_FIGURE_BEGIN_HOLLOW);
-            sink.AddArc(&D2D1_ARC_SEGMENT {
-                point: pt(cx + rad * a1.cos(), cy + rad * a1.sin()),
-                size: D2D_SIZE_F { width: rad, height: rad },
-                rotationAngle: 0.0,
-                sweepDirection: D2D1_SWEEP_DIRECTION_CLOCKWISE,
-                arcSize: if frac > 0.5 { D2D1_ARC_SIZE_LARGE } else { D2D1_ARC_SIZE_SMALL },
-            });
-            sink.EndFigure(D2D1_FIGURE_END_OPEN);
-            if sink.Close().is_ok() {
-                self.rt.DrawGeometry(&geo, self.b(c), w, &self.round);
-            }
-        }
-    }
-
-    /// Water drop shape filling `r`.
-    pub fn drop_geo(&self, r: R) -> Option<ID2D1Geometry> {
-        let cx = r.cx();
-        let (top, w, h) = (r.y, r.w, r.h);
-        let yb = top + h * 0.62;
-        unsafe {
-            let geo = self.factory.CreatePathGeometry().ok()?;
-            let sink = geo.Open().ok()?;
-            sink.BeginFigure(pt(cx, top), D2D1_FIGURE_BEGIN_FILLED);
-            sink.AddBezier(&D2D1_BEZIER_SEGMENT {
-                point1: pt(cx + w * 0.12, top + h * 0.2),
-                point2: pt(cx + w * 0.5, top + h * 0.36),
-                point3: pt(cx + w * 0.5, yb),
-            });
-            sink.AddArc(&D2D1_ARC_SEGMENT {
-                point: pt(cx - w * 0.5, yb),
-                size: D2D_SIZE_F { width: w * 0.5, height: h * 0.38 },
-                rotationAngle: 0.0,
-                sweepDirection: D2D1_SWEEP_DIRECTION_CLOCKWISE,
-                arcSize: D2D1_ARC_SIZE_SMALL,
-            });
-            sink.AddBezier(&D2D1_BEZIER_SEGMENT {
-                point1: pt(cx - w * 0.5, top + h * 0.36),
-                point2: pt(cx - w * 0.12, top + h * 0.2),
-                point3: pt(cx, top),
-            });
-            sink.EndFigure(D2D1_FIGURE_END_CLOSED);
-            sink.Close().ok()?;
-            geo.cast().ok()
-        }
-    }
-
     /// Concave fillet next to a top-attached shape: a `f`×`f` square at the top edge
     /// with a quarter circle cut out, so the notch flows smoothly into the screen edge.
     /// `x` is the shape's left edge (left = true) or right edge (left = false).
@@ -582,14 +521,6 @@ impl Gfx {
             sink.Close().ok()?;
             Some(geo)
         }
-    }
-
-    pub fn fill_geo(&self, g: &ID2D1Geometry, c: C) {
-        unsafe { self.rt.FillGeometry(g, self.b(c), None) }
-    }
-
-    pub fn stroke_geo(&self, g: &ID2D1Geometry, c: C, w: f32) {
-        unsafe { self.rt.DrawGeometry(g, self.b(c), w, &self.round) }
     }
 
     fn fmt(&self, size: f32, weight: u32, al: Al, face: Face, wrap: bool) -> Option<IDWriteTextFormat> {
