@@ -1,6 +1,7 @@
-//! Otak kucing: menerima sinyal, memutuskan animasi mana yang tampil.
-//! Prioritas: happy > focus > music > yawn > sleep > idle.
-//! Waktu selalu dikirim dari luar, jadi logika ini murni dan mudah dites.
+//! The cat's brain: takes signals (music, focus timer, idle time, petting) and decides which
+//! animation plays, and which frame of it is showing.
+//! Priority: happy > focus > music > yawn > sleep > idle.
+//! Time is always passed in, so this stays pure and easy to test.
 
 use std::time::{Duration, Instant};
 
@@ -32,6 +33,22 @@ pub struct Pet {
     last_change: Option<Instant>,
     last_click: Option<Instant>,
     last_yawn: Option<Instant>,
+    /// the generation the frame clock belongs to, and when that animation started
+    anim: (u32, Option<Instant>),
+}
+
+impl Mood {
+    /// (frames in the strip, frames per second, loops)
+    pub fn strip(self) -> (usize, f32, bool) {
+        match self {
+            Mood::Idle => (8, 6.0, true),
+            Mood::Music => (8, 8.0, true),
+            Mood::Sleep => (8, 4.0, true),
+            Mood::Focus => (6, 4.0, true),
+            Mood::Happy => (6, 10.0, false),
+            Mood::Yawn => (6, 6.0, false),
+        }
+    }
 }
 
 impl Pet {
@@ -47,19 +64,46 @@ impl Pet {
             last_change: None,
             last_click: None,
             last_yawn: None,
+            anim: (u32::MAX, None),
         }
     }
 
+    /// The frame showing at `now` (index into the mood's strip). A one-shot animation that
+    /// has played to its end hands over to the next mood here.
+    pub fn frame(&mut self, now: Instant) -> (Mood, usize) {
+        for _ in 0..3 {
+            if self.anim.0 != self.generation || self.anim.1.is_none() {
+                self.anim = (self.generation, Some(now));
+            }
+            let start = self.anim.1.unwrap_or(now);
+            let (frames, fps, loops) = self.mood.strip();
+            let i = (now.saturating_duration_since(start).as_secs_f32() * fps) as usize;
+            if loops {
+                return (self.mood, i % frames);
+            }
+            if i < frames {
+                return (self.mood, i);
+            }
+            if !self.one_shot_done(now) {
+                return (self.mood, frames - 1);
+            }
+        }
+        (self.mood, 0)
+    }
+
+    /// How long until the frame changes (for pacing redraws).
+    pub fn frame_period(&self) -> Duration {
+        Duration::from_secs_f32(1.0 / self.mood.strip().1)
+    }
+
+    #[cfg(test)]
     pub fn mood(&self) -> Mood {
         self.mood
     }
 
+    #[cfg(test)]
     pub fn generation(&self) -> u32 {
         self.generation
-    }
-
-    pub fn set_sleep_after(&mut self, after: Duration) {
-        self.sleep_after = after;
     }
 
     pub fn is_night(hour: u32) -> bool {
@@ -291,6 +335,18 @@ mod tests {
         let (mut p, t) = pet();
         p.tick(t, Duration::ZERO, DAY);
         assert_eq!(p.mood(), Mood::Idle);
+    }
+
+    #[test]
+    fn frames_loop_and_one_shots_hand_over() {
+        let (mut p, t) = pet();
+        assert_eq!(p.frame(t), (Mood::Idle, 0));
+        assert_eq!(p.frame(t + Duration::from_millis(1400)), (Mood::Idle, 0)); // 8 frames at 6 fps wraps
+        p.click(t + secs(3));
+        assert_eq!(p.frame(t + secs(3)), (Mood::Happy, 0));
+        assert_eq!(p.frame(t + secs(3) + Duration::from_millis(250)), (Mood::Happy, 2));
+        // 6 frames at 10 fps: done after 0.6 s, back to idle
+        assert_eq!(p.frame(t + secs(4)).0, Mood::Idle);
     }
 
     #[test]

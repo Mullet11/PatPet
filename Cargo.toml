@@ -1,61 +1,66 @@
 [package]
 name = "patpet"
-version = "2.0.0"
+version = "3.0.0"
 edition = "2021"
-description = "Widget desktop kucing pixel art: jam, cuaca, Spotify, timer, dan catatan."
-publish = false
+description = "PatPet - a Dynamic Island for Windows with a pixel cat"
 
 [dependencies]
-# Hanya renderer software: tanpa OpenGL, jadi RAM tetap kecil.
-slint = { version = "1", default-features = false, features = [
-    "std",
-    "compat-1-2",
-    "renderer-software",
-    "software-renderer-systemfonts",
-] }
+serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-windows = { version = "0.61", features = [
-    "Devices_Geolocation",
-    "ApplicationModel",
+windows-core = "0.58"
+
+[dependencies.windows]
+version = "0.58"
+features = [
+    "implement",
     "Foundation",
     "Foundation_Collections",
+    "Foundation_Numerics",
     "Media_Control",
     "Storage_Streams",
-    "UI_Notifications",
-    "UI_Notifications_Management",
+    "Web_Http",
+    "Web_Http_Headers",
+    "Networking_Connectivity",
+    "Security_Cryptography",
+    "Security_Cryptography_Core",
     "Win32_Foundation",
-    "Win32_Networking_WinHttp",
+    "Win32_Devices_FunctionDiscovery",
+    "Win32_Globalization",
+    "Win32_Graphics_Direct2D",
+    "Win32_Graphics_Direct2D_Common",
+    "Win32_Graphics_DirectWrite",
+    "Win32_Graphics_Dxgi_Common",
     "Win32_Graphics_Gdi",
     "Win32_Graphics_Imaging",
+    "Win32_Media",
+    "Win32_Security",
     "Win32_Media_Audio",
     "Win32_Media_Audio_Endpoints",
-    "Win32_UI_Shell_PropertiesSystem",
+    "Win32_Storage_FileSystem",
     "Win32_System_Com",
     "Win32_System_Com_StructuredStorage",
-    "Win32_System_Variant",
     "Win32_System_DataExchange",
+    "Win32_System_Diagnostics_ToolHelp",
     "Win32_System_LibraryLoader",
     "Win32_System_Memory",
     "Win32_System_Ole",
-    "Win32_System_Performance",
     "Win32_System_Power",
-    "Win32_System_SystemServices",
+    "Win32_System_Registry",
     "Win32_System_SystemInformation",
+    "Win32_System_SystemServices",
     "Win32_System_Threading",
-    "Win32_System_Time",
+    "Win32_System_Variant",
     "Win32_System_WinRT",
     "Win32_UI_HiDpi",
     "Win32_UI_Input_KeyboardAndMouse",
     "Win32_UI_Shell",
+    "Win32_UI_Shell_Common",
+    "Win32_UI_Shell_PropertiesSystem",
     "Win32_UI_WindowsAndMessaging",
-] }
-rusqlite = { version = "0.41.1", default-features = false, features = ["bundled"] }
-serde = { version = "1.0.229", features = ["derive"] }
-windows-core = "0.61"
+]
 
 [build-dependencies]
 embed-resource = "3"
-slint-build = "1"
 
 [profile.release]
 opt-level = "s"

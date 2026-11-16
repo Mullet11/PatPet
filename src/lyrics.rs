@@ -1,182 +1,194 @@
-//! Lirik dari LRCLIB (lrclib.net, gratis tanpa API key). Lirik tersinkron
-//! (format LRC) diutamakan supaya baris yang sedang dinyanyikan bisa disorot.
+//! Synced lyrics from LRCLIB (https://lrclib.net), a free, open lyrics database.
 
-use std::time::Duration;
+use windows::core::*;
+use windows::Foundation::Uri;
+use windows::Web::Http::{HttpClient, HttpStatusCode};
+use windows::Win32::System::WinRT::*;
 
-use serde_json::Value;
+use crate::events::{post, Event};
 
-use crate::http::{self, encode};
-
-const MAX_LINES: usize = 400;
-const MAX_LINE_CHARS: usize = 200;
-
-#[derive(Clone, Debug, PartialEq)]
-pub enum Lyrics {
-    /// Baris berurutan waktu.
-    Synced(Vec<(Duration, String)>),
-    /// Teks biasa tanpa waktu.
-    Plain(String),
-    Instrumental,
+#[derive(Clone)]
+pub struct Line {
+    pub t: f64,
+    pub text: String,
 }
 
-#[derive(Debug, PartialEq)]
-pub enum Fetch {
-    Found(Lyrics),
-    NotFound,
-    Failed,
-}
-
-pub fn fetch(title: &str, artist: &str, album: &str, duration: Duration) -> Fetch {
-    let title = clean(title);
-    let artist = clean(artist);
-    if title.is_empty() {
-        return Fetch::NotFound;
-    }
-
-    // 1) Pencocokan tepat: judul, artis, album, durasi.
-    let mut path = format!("/api/get?track_name={}&artist_name={}", encode(&title), encode(&artist));
-    if !album.trim().is_empty() {
-        path += &format!("&album_name={}", encode(&clean(album)));
-    }
-    if !duration.is_zero() {
-        path += &format!("&duration={}", duration.as_secs_f64().round() as u64);
-    }
-    match http::get("lrclib.net", &path) {
-        Ok(body) => {
-            if let Some(found) = serde_json::from_str(&body).ok().as_ref().and_then(parse) {
-                return Fetch::Found(found);
-            }
+pub fn fetch(key: u64, title: String, artist: String, album: String, dur: f64) {
+    std::thread::spawn(move || {
+        unsafe {
+            let _ = RoInitialize(RO_INIT_MULTITHREADED);
         }
-        Err(http::Error::Status(404)) => {}
-        Err(_) => return Fetch::Failed,
-    }
-
-    // 2) Pencarian longgar: hasil pertama yang punya lirik.
-    let path = format!("/api/search?track_name={}&artist_name={}", encode(&title), encode(&artist));
-    let Ok(body) = http::get("lrclib.net", &path) else { return Fetch::Failed };
-    let Ok(Value::Array(items)) = serde_json::from_str::<Value>(&body) else { return Fetch::NotFound };
-    items.iter().take(10).find_map(parse).map_or(Fetch::NotFound, Fetch::Found)
+        let r = find(&title, &artist, &album, dur);
+        post(Event::Lyrics(key, r));
+    });
 }
 
-/// Indeks baris terakhir yang waktunya ≤ `position`; `None` sebelum baris pertama.
-pub fn index_at(lines: &[(Duration, String)], position: Duration) -> Option<usize> {
-    lines.partition_point(|(t, _)| *t <= position).checked_sub(1)
+fn esc(s: &str) -> String {
+    Uri::EscapeComponent(&HSTRING::from(s)).map(|h| h.to_string()).unwrap_or_default()
 }
 
-fn parse(item: &Value) -> Option<Lyrics> {
-    if item.get("instrumental").and_then(Value::as_bool) == Some(true) {
-        return Some(Lyrics::Instrumental);
-    }
-    if let Some(lrc) = item.get("syncedLyrics").and_then(Value::as_str) {
-        let lines = parse_lrc(lrc);
-        if !lines.is_empty() {
-            return Some(Lyrics::Synced(lines));
-        }
-    }
-    let plain = item.get("plainLyrics").and_then(Value::as_str)?.trim();
-    if plain.is_empty() {
+fn http_get(client: &HttpClient, url: &str) -> Option<String> {
+    let uri = Uri::CreateUri(&HSTRING::from(url)).ok()?;
+    let resp = client.GetAsync(&uri).ok()?.get().ok()?;
+    if resp.StatusCode().ok()? != HttpStatusCode::Ok {
         return None;
     }
-    let text: Vec<String> = plain.lines().take(MAX_LINES).map(|l| limit(l.trim())).collect();
-    Some(Lyrics::Plain(text.join("\n")))
+    Some(resp.Content().ok()?.ReadAsStringAsync().ok()?.get().ok()?.to_string())
 }
 
-/// Format LRC: "[mm:ss.xx] teks". Satu baris bisa punya beberapa tag waktu;
-/// tag lain seperti "[ar:...]" diabaikan.
-fn parse_lrc(lrc: &str) -> Vec<(Duration, String)> {
-    let mut lines = Vec::new();
-    for raw in lrc.lines() {
-        let mut rest = raw.trim_start();
+const NOISE: [&str; 14] = [
+    "official", "video", "lyric", "audio", "visualizer", "visualiser", "mv", "m/v", "hd", "4k", "remaster", "live",
+    "color coded", "performance",
+];
+
+pub fn strip_brackets(s: &str, all: bool) -> String {
+    let mut out = String::new();
+    let mut depth = 0;
+    let mut buf = String::new();
+    for ch in s.chars() {
+        match ch {
+            '(' | '[' | '【' => {
+                if depth == 0 {
+                    buf.clear();
+                }
+                depth += 1;
+                buf.push(ch);
+            }
+            ')' | ']' | '】' if depth > 0 => {
+                buf.push(ch);
+                depth -= 1;
+                if depth == 0 {
+                    let l = buf.to_lowercase();
+                    if !all && !NOISE.iter().any(|n| l.contains(n)) {
+                        out.push_str(&buf);
+                    }
+                    buf.clear();
+                }
+            }
+            _ if depth > 0 => buf.push(ch),
+            _ => out.push(ch),
+        }
+    }
+    let out = out.replace('|', " ");
+    out.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+pub fn clean_artist(a: &str) -> String {
+    let a = a.trim();
+    let a = a.strip_suffix(" - Topic").unwrap_or(a);
+    let a = a.strip_suffix("VEVO").unwrap_or(a);
+    a.trim().to_string()
+}
+
+fn candidates(title: &str, artist: &str) -> Vec<(String, String)> {
+    let t = strip_brackets(title, false);
+    let a = clean_artist(artist);
+    let mut v = vec![(t.clone(), a.clone())];
+    // YouTube style "Artist - Title"
+    if let Some((l, r)) = t.split_once(" - ") {
+        v.push((r.trim().to_string(), l.trim().to_string()));
+    }
+    let bare = strip_brackets(title, true);
+    let bare = bare.split(" feat.").next().unwrap_or(&bare).split(" ft.").next().unwrap_or(&bare).trim().to_string();
+    if bare != t {
+        v.push((bare, a));
+    }
+    v
+}
+
+fn pick(json: &serde_json::Value, dur: f64) -> Option<String> {
+    let arr = json.as_array()?;
+    let mut best: Option<(f64, String)> = None;
+    for it in arr {
+        let Some(s) = it.get("syncedLyrics").and_then(|v| v.as_str()) else { continue };
+        if s.trim().is_empty() {
+            continue;
+        }
+        let d = it.get("duration").and_then(|v| v.as_f64()).unwrap_or(0.0);
+        let score = if dur > 0.0 && d > 0.0 { (d - dur).abs() } else { 30.0 };
+        if best.as_ref().map(|b| score < b.0).unwrap_or(true) {
+            best = Some((score, s.to_string()));
+        }
+    }
+    best.map(|b| b.1)
+}
+
+fn find(title: &str, artist: &str, album: &str, dur: f64) -> Option<Vec<Line>> {
+    let client = HttpClient::new().ok()?;
+    if let Ok(h) = client.DefaultRequestHeaders() {
+        if let Ok(ua) = h.UserAgent() {
+            let _ = ua.TryParseAdd(&HSTRING::from("PatPet/3.0 (Windows dynamic island)"));
+        }
+    }
+    let base = "https://lrclib.net/api";
+    for (i, (t, a)) in candidates(title, artist).into_iter().enumerate() {
+        if t.is_empty() {
+            continue;
+        }
+        if i == 0 && !a.is_empty() {
+            let mut url = format!("{base}/get?track_name={}&artist_name={}", esc(&t), esc(&a));
+            if !album.is_empty() {
+                url.push_str(&format!("&album_name={}", esc(album)));
+            }
+            if dur > 0.0 {
+                url.push_str(&format!("&duration={}", dur.round() as i64));
+            }
+            if let Some(body) = http_get(&client, &url) {
+                if let Ok(v) = serde_json::from_str::<serde_json::Value>(&body) {
+                    if let Some(s) = v.get("syncedLyrics").and_then(|x| x.as_str()) {
+                        let l = parse_lrc(s);
+                        if !l.is_empty() {
+                            return Some(l);
+                        }
+                    }
+                }
+            }
+        }
+        let url = if a.is_empty() {
+            format!("{base}/search?q={}", esc(&t))
+        } else {
+            format!("{base}/search?track_name={}&artist_name={}", esc(&t), esc(&a))
+        };
+        if let Some(body) = http_get(&client, &url) {
+            if let Ok(v) = serde_json::from_str::<serde_json::Value>(&body) {
+                if let Some(s) = pick(&v, dur) {
+                    let l = parse_lrc(&s);
+                    if !l.is_empty() {
+                        return Some(l);
+                    }
+                }
+            }
+        }
+    }
+    // last resort: free-text search
+    let q = format!("{} {}", strip_brackets(title, true), clean_artist(artist));
+    let body = http_get(&client, &format!("{base}/search?q={}", esc(q.trim())))?;
+    let v = serde_json::from_str::<serde_json::Value>(&body).ok()?;
+    let l = parse_lrc(&pick(&v, dur)?);
+    (!l.is_empty()).then_some(l)
+}
+
+pub fn parse_lrc(s: &str) -> Vec<Line> {
+    let mut out = Vec::new();
+    for raw in s.lines() {
+        let mut rest = raw.trim();
         let mut times = Vec::new();
-        while let Some(tag) = rest.strip_prefix('[') {
-            let Some(end) = tag.find(']') else { break };
-            let Some(time) = parse_time(&tag[..end]) else { break };
-            times.push(time);
-            rest = &tag[end + 1..];
+        while let Some(r) = rest.strip_prefix('[') {
+            let Some(end) = r.find(']') else { break };
+            let tag = &r[..end];
+            rest = &r[end + 1..];
+            if let Some((m, sec)) = tag.split_once(':') {
+                if let (Ok(m), Ok(sec)) = (m.trim().parse::<f64>(), sec.trim().replace(':', ".").parse::<f64>()) {
+                    times.push(m * 60.0 + sec);
+                }
+            }
         }
-        let text = limit(rest.trim());
-        lines.extend(times.into_iter().map(|t| (t, text.clone())));
-        if lines.len() >= MAX_LINES {
-            break;
+        let text = rest.trim();
+        let text = if text.is_empty() { "♪" } else { text };
+        for t in times {
+            out.push(Line { t, text: text.to_string() });
         }
     }
-    lines.sort_by_key(|(t, _)| *t);
-    lines
-}
-
-/// "01:02.345" atau "1:02:34" → durasi.
-fn parse_time(tag: &str) -> Option<Duration> {
-    let (min, sec) = tag.split_once(':')?;
-    let min: u64 = min.parse().ok().filter(|_| (1..=3).contains(&min.len()))?;
-    let sec: f64 = sec.replacen(':', ".", 1).parse().ok().filter(|s: &f64| (0.0..60.0).contains(s))?;
-    Some(Duration::from_secs(min * 60) + Duration::from_secs_f64(sec))
-}
-
-fn clean(s: &str) -> String {
-    s.trim().chars().take(200).collect()
-}
-
-fn limit(s: &str) -> String {
-    s.chars().take(MAX_LINE_CHARS).collect()
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn ms(v: u64) -> Duration {
-        Duration::from_millis(v)
-    }
-
-    #[test]
-    fn parses_and_sorts_timed_lines() {
-        let lines = parse_lrc("[00:12.50] baris kedua\n[00:03.00] baris pertama\n[01:02.345]baris ketiga\ntanpa waktu");
-        assert_eq!(
-            lines,
-            vec![
-                (ms(3000), "baris pertama".into()),
-                (ms(12500), "baris kedua".into()),
-                (ms(62345), "baris ketiga".into()),
-            ]
-        );
-    }
-
-    #[test]
-    fn line_with_several_tags_repeats() {
-        let lines = parse_lrc("[00:10.00][00:40.00] reff contoh");
-        assert_eq!(lines.len(), 2);
-        assert!(lines.iter().all(|(_, t)| t == "reff contoh"));
-    }
-
-    #[test]
-    fn metadata_tags_are_ignored() {
-        assert!(parse_lrc("[ar: Penyanyi]\n[length: 03:20]").is_empty());
-    }
-
-    #[test]
-    fn index_follows_position() {
-        let lines = parse_lrc("[00:05.00] a\n[00:10.00] b\n[00:20.00] c");
-        assert_eq!(index_at(&lines, ms(1000)), None);
-        assert_eq!(index_at(&lines, ms(5000)), Some(0));
-        assert_eq!(index_at(&lines, ms(19_900)), Some(1));
-        assert_eq!(index_at(&lines, ms(180_000)), Some(2));
-    }
-
-    #[test]
-    fn synced_preferred_over_plain() {
-        let v: Value = serde_json::from_str(r#"{"syncedLyrics":"[00:01.00] satu","plainLyrics":"satu"}"#).unwrap();
-        assert_eq!(parse(&v), Some(Lyrics::Synced(vec![(ms(1000), "satu".into())])));
-    }
-
-    #[test]
-    fn plain_and_instrumental_are_handled() {
-        let plain: Value = serde_json::from_str(r#"{"syncedLyrics":null,"plainLyrics":"satu\ndua"}"#).unwrap();
-        assert_eq!(parse(&plain), Some(Lyrics::Plain("satu\ndua".into())));
-
-        let ins: Value = serde_json::from_str(r#"{"instrumental":true}"#).unwrap();
-        assert_eq!(parse(&ins), Some(Lyrics::Instrumental));
-
-        let empty: Value = serde_json::from_str(r#"{"plainLyrics":""}"#).unwrap();
-        assert_eq!(parse(&empty), None);
-    }
+    out.sort_by(|a, b| a.t.partial_cmp(&b.t).unwrap_or(std::cmp::Ordering::Equal));
+    out
 }

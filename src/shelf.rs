@@ -1,112 +1,211 @@
-//! Shelf: tempat menaruh file sementara. Yang disimpan hanya lokasi file,
-//! di `shelf.json`, jadi isinya tetap ada setelah restart sampai file
-//! dipindahkan keluar atau dikeluarkan dari Shelf.
+//! File shelf: OLE drop target for dragging files in, shell drag source for
+//! dragging them back out.
 
-use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 
-pub struct Shelf {
-    file: PathBuf,
-    items: Vec<PathBuf>,
+use windows::core::*;
+use windows::Win32::Foundation::*;
+use windows::Win32::System::Com::*;
+use windows::Win32::System::Memory::{GlobalLock, GlobalSize, GlobalUnlock};
+use windows::Win32::System::Ole::*;
+use windows::Win32::System::SystemServices::MODIFIERKEYS_FLAGS;
+use windows::Win32::UI::Shell::Common::ITEMIDLIST;
+use windows::Win32::UI::Shell::*;
+
+use crate::events::{post, Event};
+use crate::util::wide;
+
+static DRAGGING_OUT: AtomicBool = AtomicBool::new(false);
+static DRAG_OK: AtomicBool = AtomicBool::new(false);
+/// the drag over the island carries text, not files (it goes to the Clipboard tab)
+static DRAG_TEXT: AtomicBool = AtomicBool::new(false);
+
+fn hdrop_fmt() -> FORMATETC {
+    FORMATETC {
+        cfFormat: CF_HDROP.0,
+        ptd: std::ptr::null_mut(),
+        dwAspect: DVASPECT_CONTENT.0,
+        lindex: -1,
+        tymed: TYMED_HGLOBAL.0 as u32,
+    }
 }
 
-impl Shelf {
-    /// Muat dari `file`; item yang file aslinya sudah hilang dibuang.
-    pub fn load(file: PathBuf) -> Self {
-        let items: Vec<PathBuf> = std::fs::read_to_string(&file)
-            .ok()
-            .and_then(|t| serde_json::from_str::<Vec<String>>(&t).ok())
-            .unwrap_or_default()
-            .into_iter()
-            .map(PathBuf::from)
-            .filter(|p| p.exists())
-            .collect();
-        Self { file, items }
-    }
+fn text_fmt() -> FORMATETC {
+    FORMATETC { cfFormat: CF_UNICODETEXT.0, ..hdrop_fmt() }
+}
 
-    pub fn items(&self) -> &[PathBuf] {
-        &self.items
-    }
+fn has_files(d: &IDataObject) -> bool {
+    unsafe { d.QueryGetData(&hdrop_fmt()) == S_OK }
+}
 
-    /// Tambahkan di depan. Mengembalikan `false` bila sudah ada.
-    pub fn add(&mut self, path: PathBuf) -> bool {
-        if self.items.iter().any(|p| same(p, &path)) {
-            return false;
+fn has_text(d: &IDataObject) -> bool {
+    unsafe { d.QueryGetData(&text_fmt()) == S_OK }
+}
+
+/// Dragged text (from a browser, an editor, ...).
+fn get_text(d: &IDataObject) -> Option<String> {
+    unsafe {
+        let mut med = d.GetData(&text_fmt()).ok()?;
+        let hg = med.u.hGlobal;
+        let p = GlobalLock(hg) as *const u16;
+        let r = if p.is_null() {
+            None
+        } else {
+            let max = GlobalSize(hg) / 2;
+            let mut n = 0usize;
+            while n < max && *p.add(n) != 0 {
+                n += 1;
+            }
+            let s = String::from_utf16_lossy(std::slice::from_raw_parts(p, n));
+            let _ = GlobalUnlock(hg);
+            Some(s)
+        };
+        ReleaseStgMedium(&mut med);
+        r.filter(|s| !s.trim().is_empty())
+    }
+}
+
+fn get_files(d: &IDataObject) -> Vec<String> {
+    let mut out = Vec::new();
+    unsafe {
+        let Ok(mut med) = d.GetData(&hdrop_fmt()) else { return out };
+        let hdrop = HDROP(med.u.hGlobal.0);
+        let n = DragQueryFileW(hdrop, u32::MAX, None);
+        for i in 0..n {
+            let len = DragQueryFileW(hdrop, i, None) as usize;
+            let mut buf = vec![0u16; len + 1];
+            DragQueryFileW(hdrop, i, Some(&mut buf));
+            out.push(String::from_utf16_lossy(&buf[..len]));
         }
-        self.items.insert(0, path);
-        self.save();
-        true
+        ReleaseStgMedium(&mut med);
     }
+    out
+}
 
-    /// Keluarkan dari Shelf (filenya tidak dihapus).
-    pub fn remove(&mut self, path: &Path) {
-        let before = self.items.len();
-        self.items.retain(|p| !same(p, path));
-        if self.items.len() != before {
-            self.save();
-        }
-    }
+#[implement(IDropTarget)]
+pub struct DropTarget;
 
-    fn save(&self) {
-        let list: Vec<String> = self.items.iter().map(|p| p.to_string_lossy().into_owned()).collect();
-        if let Ok(text) = serde_json::to_string_pretty(&list) {
-            let tmp = self.file.with_extension("json.tmp");
-            if std::fs::write(&tmp, text).is_ok() {
-                let _ = std::fs::rename(&tmp, &self.file);
+impl IDropTarget_Impl for DropTarget_Impl {
+    fn DragEnter(
+        &self,
+        pdataobj: Option<&IDataObject>,
+        _ks: MODIFIERKEYS_FLAGS,
+        _pt: &POINTL,
+        pdweffect: *mut DROPEFFECT,
+    ) -> Result<()> {
+        // files win over text: a file dragged from Explorer often carries its name as text too
+        let (files, text) = match pdataobj {
+            Some(d) if !DRAGGING_OUT.load(Ordering::Relaxed) => {
+                let f = has_files(d) && !get_files(d).is_empty();
+                (f, !f && has_text(d))
+            }
+            _ => (false, false),
+        };
+        let ok = files || text;
+        DRAG_OK.store(ok, Ordering::Relaxed);
+        DRAG_TEXT.store(text, Ordering::Relaxed);
+        unsafe {
+            if !pdweffect.is_null() {
+                *pdweffect = if ok { DROPEFFECT_COPY } else { DROPEFFECT_NONE };
             }
         }
+        if ok {
+            post(Event::DragEnter(text));
+        }
+        Ok(())
+    }
+
+    fn DragOver(&self, _ks: MODIFIERKEYS_FLAGS, _pt: &POINTL, pdweffect: *mut DROPEFFECT) -> Result<()> {
+        unsafe {
+            if !pdweffect.is_null() {
+                *pdweffect = if DRAG_OK.load(Ordering::Relaxed) { DROPEFFECT_COPY } else { DROPEFFECT_NONE };
+            }
+        }
+        Ok(())
+    }
+
+    fn DragLeave(&self) -> Result<()> {
+        if DRAG_OK.swap(false, Ordering::Relaxed) {
+            post(Event::DragLeave);
+        }
+        Ok(())
+    }
+
+    fn Drop(
+        &self,
+        pdataobj: Option<&IDataObject>,
+        _ks: MODIFIERKEYS_FLAGS,
+        _pt: &POINTL,
+        pdweffect: *mut DROPEFFECT,
+    ) -> Result<()> {
+        let ok = DRAG_OK.swap(false, Ordering::Relaxed);
+        if ok && DRAG_TEXT.load(Ordering::Relaxed) {
+            let text = pdataobj.and_then(get_text);
+            unsafe {
+                if !pdweffect.is_null() {
+                    *pdweffect = if text.is_some() { DROPEFFECT_COPY } else { DROPEFFECT_NONE };
+                }
+            }
+            post(Event::DropText(text.unwrap_or_default()));
+            return Ok(());
+        }
+        let files = if ok { pdataobj.map(get_files).unwrap_or_default() } else { Vec::new() };
+        unsafe {
+            if !pdweffect.is_null() {
+                *pdweffect = if files.is_empty() { DROPEFFECT_NONE } else { DROPEFFECT_COPY };
+            }
+        }
+        post(Event::Drop(files));
+        Ok(())
     }
 }
 
-/// Lokasi Windows tidak membedakan huruf besar/kecil.
-fn same(a: &Path, b: &Path) -> bool {
-    a.as_os_str().eq_ignore_ascii_case(b.as_os_str())
+pub fn register(hwnd: HWND) {
+    unsafe {
+        let t: IDropTarget = DropTarget.into();
+        let _ = RegisterDragDrop(hwnd, &t);
+    }
 }
 
-/// Nama tampilan: nama file tanpa folder.
-pub fn display_name(path: &Path) -> String {
-    path.file_name().map_or_else(|| path.to_string_lossy().into_owned(), |n| n.to_string_lossy().into_owned())
+/// Build a shell data object carrying all the given files (verified to work for files
+/// from different folders).
+pub fn data_object(paths: &[String]) -> Option<IDataObject> {
+    unsafe {
+        let mut pidls: Vec<*const ITEMIDLIST> = Vec::new();
+        for p in paths {
+            let w = wide(p);
+            let mut pidl: *mut ITEMIDLIST = std::ptr::null_mut();
+            if SHParseDisplayName(PCWSTR(w.as_ptr()), None, &mut pidl, 0, None).is_ok() && !pidl.is_null() {
+                pidls.push(pidl as *const _);
+            }
+        }
+        let obj = if pidls.is_empty() {
+            None
+        } else {
+            SHCreateShellItemArrayFromIDLists(&pidls)
+                .ok()
+                .and_then(|arr| arr.BindToHandler::<_, IDataObject>(None, &BHID_DataObject).ok())
+        };
+        for p in pidls {
+            CoTaskMemFree(Some(p as *const _));
+        }
+        obj
+    }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn temp_dir(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("patpet-test-{name}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        dir
+/// Start a shell drag of the given files (blocks until the drop completes).
+pub fn drag_out(hwnd: HWND, paths: &[String]) {
+    let Some(obj) = data_object(paths) else { return };
+    DRAGGING_OUT.store(true, Ordering::Relaxed);
+    unsafe {
+        let _ = SHDoDragDrop(hwnd, &obj, None, DROPEFFECT_COPY | DROPEFFECT_LINK);
     }
+    DRAGGING_OUT.store(false, Ordering::Relaxed);
+}
 
-    #[test]
-    fn adds_removes_and_survives_restart() {
-        let dir = temp_dir("shelf");
-        let a = dir.join("laporan.pdf");
-        let b = dir.join("foto.png");
-        std::fs::write(&a, "a").unwrap();
-        std::fs::write(&b, "b").unwrap();
-
-        let mut shelf = Shelf::load(dir.join("shelf.json"));
-        assert!(shelf.add(a.clone()));
-        assert!(shelf.add(b.clone()));
-        assert!(!shelf.add(PathBuf::from(a.to_string_lossy().to_uppercase())), "tidak dobel");
-        assert_eq!(shelf.items(), &[b.clone(), a.clone()]);
-
-        let again = Shelf::load(dir.join("shelf.json"));
-        assert_eq!(again.items(), &[b.clone(), a.clone()]);
-
-        // File yang sudah dipindah keluar tidak dimuat lagi.
-        std::fs::remove_file(&b).unwrap();
-        let mut after = Shelf::load(dir.join("shelf.json"));
-        assert_eq!(after.items(), &[a.clone()]);
-        after.remove(&a);
-        assert!(after.items().is_empty());
-        assert!(a.exists(), "keluarkan dari Shelf tidak menghapus file");
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn names_show_only_the_file() {
-        assert_eq!(display_name(Path::new(r"C:\Users\x\Downloads\tugas akhir.docx")), "tugas akhir.docx");
+pub fn open(path: &str) {
+    let w = wide(path);
+    unsafe {
+        ShellExecuteW(HWND::default(), w!("open"), PCWSTR(w.as_ptr()), PCWSTR::null(), PCWSTR::null(), windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL);
     }
 }

@@ -1,108 +1,119 @@
-//! Ikon di system tray Windows dan menu klik kanannya.
+use windows::core::*;
+use windows::Win32::Foundation::*;
+use windows::Win32::System::Registry::*;
+use windows::Win32::UI::Shell::*;
+use windows::Win32::UI::WindowsAndMessaging::*;
 
-use windows::core::PCWSTR;
-use windows::Win32::Foundation::{HWND, LPARAM, POINT, WPARAM};
-use windows::Win32::System::LibraryLoader::GetModuleHandleW;
-use windows::Win32::UI::HiDpi::{GetDpiForWindow, GetSystemMetricsForDpi};
-use windows::Win32::UI::Shell::{
-    Shell_NotifyIconW, NIF_ICON, NIF_MESSAGE, NIF_TIP, NIM_ADD, NIM_DELETE, NIM_SETVERSION, NOTIFYICONDATAW, NOTIFYICON_VERSION_4,
-};
-use windows::Win32::UI::WindowsAndMessaging::{
-    AppendMenuW, CreatePopupMenu, PostMessageW, WM_NULL, DestroyMenu, DestroyIcon, GetCursorPos, LoadImageW,
-    SetForegroundWindow, TrackPopupMenu, HICON, IMAGE_ICON, LR_DEFAULTCOLOR, MF_SEPARATOR,
-    MF_STRING, SM_CXSMICON, TPM_BOTTOMALIGN, TPM_RETURNCMD, TPM_RIGHTBUTTON, WM_APP,
-};
+use crate::util::wide;
 
-/// Pesan yang dikirim shell ke jendela saat ikon tray diklik.
-pub const WM_TRAY: u32 = WM_APP + 2;
-/// Klik kiri / Enter pada ikon (NOTIFYICON_VERSION_4). Tidak diekspor crate `windows`.
-pub const NIN_SELECT: u32 = 0x0400;
-pub const NIN_KEYSELECT: u32 = 0x0401;
+pub const WM_APP_TRAY: u32 = WM_APP + 2;
+pub const CMD_AUTOSTART: u32 = 10;
+pub const CMD_QUIT: u32 = 11;
+pub const CMD_HIDE: u32 = 12;
+pub const CMD_THEME: u32 = 13;
+pub const CMD_LINE: u32 = 14;
+pub const CMD_SHOTS: u32 = 15;
+pub const CMD_UPDATE: u32 = 16;
 
-/// Satu baris menu. `None` = garis pemisah.
-pub type MenuItem<'a> = Option<(u32, &'a str)>;
+/// Check marks shown in the menu.
+pub struct MenuState {
+    pub autostart: bool,
+    pub hidden: bool,
+    pub line_mode: bool,
+    pub screenshots: bool,
+    /// a newer version that can be installed, or what the update item says while busy
+    pub update: Option<String>,
+    pub update_busy: bool,
+}
 
-fn data(hwnd: HWND) -> NOTIFYICONDATAW {
+fn nid(hwnd: HWND) -> NOTIFYICONDATAW {
     NOTIFYICONDATAW {
-        cbSize: size_of::<NOTIFYICONDATAW>() as u32,
+        cbSize: std::mem::size_of::<NOTIFYICONDATAW>() as u32,
         hWnd: hwnd,
         uID: 1,
         ..Default::default()
     }
 }
 
-/// Mengembalikan handle ikon yang harus dilepas lewat [`remove`].
-pub fn add(hwnd: HWND) -> Option<HICON> {
-    // SAFETY: memuat resource ikon id 1 dari exe ini dengan ukuran sesuai DPI.
-    let icon = unsafe {
-        let size = GetSystemMetricsForDpi(SM_CXSMICON, GetDpiForWindow(hwnd));
-        let module = GetModuleHandleW(None).ok()?;
-        LoadImageW(Some(module.into()), PCWSTR(1 as _), IMAGE_ICON, size, size, LR_DEFAULTCOLOR).ok()?
-    };
-    let icon = HICON(icon.0);
-
-    let mut nid = data(hwnd);
-    nid.uFlags = NIF_ICON | NIF_MESSAGE | NIF_TIP;
-    nid.uCallbackMessage = WM_TRAY;
-    nid.hIcon = icon;
-    copy_into(&mut nid.szTip, "PatPet");
-    nid.Anonymous.uVersion = NOTIFYICON_VERSION_4;
-    // SAFETY: struct lengkap milik kita; hwnd valid.
+pub fn add(hwnd: HWND, icon: HICON) {
+    let mut n = nid(hwnd);
+    n.uFlags = NIF_ICON | NIF_MESSAGE | NIF_TIP;
+    n.uCallbackMessage = WM_APP_TRAY;
+    n.hIcon = icon;
+    let tip: Vec<u16> = "PatPet".encode_utf16().collect();
+    n.szTip[..tip.len()].copy_from_slice(&tip);
     unsafe {
-        let _ = Shell_NotifyIconW(NIM_ADD, &nid);
-        let _ = Shell_NotifyIconW(NIM_SETVERSION, &nid);
-    }
-    Some(icon)
-}
-
-fn copy_into(dst: &mut [u16], text: &str) {
-    // Sisakan satu tempat untuk penutup nol.
-    let room = dst.len() - 1;
-    for (d, s) in dst.iter_mut().take(room).zip(text.encode_utf16()) {
-        *d = s;
+        let _ = Shell_NotifyIconW(NIM_ADD, &n);
     }
 }
 
-pub fn remove(hwnd: HWND, icon: HICON) {
-    // SAFETY: menghapus ikon yang kita tambahkan dan melepas handle-nya sekali.
+pub fn remove(hwnd: HWND) {
+    let n = nid(hwnd);
     unsafe {
-        let _ = Shell_NotifyIconW(NIM_DELETE, &data(hwnd));
-        let _ = DestroyIcon(icon);
+        let _ = Shell_NotifyIconW(NIM_DELETE, &n);
     }
 }
 
-/// Menampilkan menu di posisi kursor. Mengembalikan id item yang dipilih.
-pub fn menu(hwnd: HWND, items: &[MenuItem]) -> Option<u32> {
-    // SAFETY: menu dibuat dan dihancurkan di sini; string hidup selama panggilan.
+pub fn menu(hwnd: HWND, st: &MenuState) -> u32 {
+    let check = |on: bool| if on { MF_STRING | MF_CHECKED } else { MF_STRING };
     unsafe {
-        let menu = CreatePopupMenu().ok()?;
-        for item in items {
-            match item {
-                Some((id, text)) => {
-                    let wide: Vec<u16> = text.encode_utf16().chain([0]).collect();
-                    let _ = AppendMenuW(menu, MF_STRING, *id as usize, PCWSTR(wide.as_ptr()));
-                }
-                None => {
-                    let _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
-                }
-            }
-        }
-        let mut at = POINT::default();
-        let _ = GetCursorPos(&mut at);
-        // Wajib supaya menu tertutup saat pengguna mengklik di luar menu.
+        let Ok(m) = CreatePopupMenu() else { return 0 };
+        let _ = AppendMenuW(m, MF_STRING | MF_GRAYED, 0, w!("PatPet"));
+        let _ = AppendMenuW(m, MF_SEPARATOR, 0, PCWSTR::null());
+        let hide = if st.hidden { w!("Show PatPet") } else { w!("Hide PatPet") };
+        let _ = AppendMenuW(m, MF_STRING, CMD_HIDE as usize, hide);
+        let _ = AppendMenuW(m, check(st.line_mode), CMD_LINE as usize, w!("Shrink to a line until hovered"));
+        let _ = AppendMenuW(m, check(st.screenshots), CMD_SHOTS as usize, w!("Add screenshots to Shelf"));
+        let _ = AppendMenuW(m, check(st.autostart), CMD_AUTOSTART as usize, w!("Start with Windows"));
+        let _ = AppendMenuW(m, MF_STRING, CMD_THEME as usize, w!("UI colors (theme.conf)..."));
+        let _ = AppendMenuW(m, MF_SEPARATOR, 0, PCWSTR::null());
+        let upd = match (&st.update, st.update_busy) {
+            (_, true) => "Updating PatPet...".to_string(),
+            (Some(v), false) => format!("Update to v{v}"),
+            (None, false) => format!("Check for updates (v{})", crate::update::CURRENT),
+        };
+        let upd_w = wide(&upd);
+        let flags = if st.update_busy { MF_STRING | MF_GRAYED } else { MF_STRING };
+        let _ = AppendMenuW(m, flags, CMD_UPDATE as usize, PCWSTR(upd_w.as_ptr()));
+        let _ = AppendMenuW(m, MF_STRING, CMD_QUIT as usize, w!("Quit PatPet"));
+        let mut p = POINT::default();
+        let _ = GetCursorPos(&mut p);
         let _ = SetForegroundWindow(hwnd);
-        let chosen = TrackPopupMenu(
-            menu,
-            TPM_RETURNCMD | TPM_RIGHTBUTTON | TPM_BOTTOMALIGN,
-            at.x,
-            at.y,
-            None,
-            hwnd,
-            None,
-        );
-        let _ = DestroyMenu(menu);
-        // Anjuran Microsoft: memastikan menu berikutnya tertutup dengan benar.
-        let _ = PostMessageW(Some(hwnd), WM_NULL, WPARAM(0), LPARAM(0));
-        (chosen.0 != 0).then_some(chosen.0 as u32)
+        let cmd = TrackPopupMenu(m, TPM_RETURNCMD | TPM_RIGHTBUTTON | TPM_NONOTIFY, p.x, p.y, 0, hwnd, None);
+        let _ = DestroyMenu(m);
+        cmd.0 as u32
+    }
+}
+
+/// Opens a config file in Notepad (always present, and .json may have no default app).
+pub fn edit_file(path: &std::path::Path) {
+    let args = wide(&format!("\"{}\"", path.display()));
+    unsafe {
+        ShellExecuteW(HWND::default(), w!("open"), w!("notepad.exe"), PCWSTR(args.as_ptr()), PCWSTR::null(), SW_SHOWNORMAL);
+    }
+}
+
+const RUN: PCWSTR = w!("Software\\Microsoft\\Windows\\CurrentVersion\\Run");
+
+pub fn autostart_enabled() -> bool {
+    unsafe { RegGetValueW(HKEY_CURRENT_USER, RUN, w!("PatPet"), RRF_RT_REG_SZ, None, None, None).is_ok() }
+}
+
+pub fn set_autostart(on: bool) {
+    unsafe {
+        if on {
+            let Ok(exe) = std::env::current_exe() else { return };
+            let v = wide(&format!("\"{}\"", exe.display()));
+            let _ = RegSetKeyValueW(
+                HKEY_CURRENT_USER,
+                RUN,
+                w!("PatPet"),
+                REG_SZ.0,
+                Some(v.as_ptr() as *const _),
+                (v.len() * 2) as u32,
+            );
+        } else {
+            let _ = RegDeleteKeyValueW(HKEY_CURRENT_USER, RUN, w!("PatPet"));
+        }
     }
 }

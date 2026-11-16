@@ -1,174 +1,178 @@
-//! Status tab Musik: lagu yang diputar, cover, dan lirik, beserta cara
-//! menampilkannya di UI.
+//! Is a desktop player still really there? Some players (Spotify) keep reporting "playing"
+//! to Windows for a few seconds after their window was closed, while they shut down. Their
+//! window and their audio stream go away right at the start, so those tell us much sooner.
 
-use std::rc::Rc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
-use slint::{Color, ComponentHandle, Image, ModelRc, Rgba8Pixel, SharedPixelBuffer, SharedString, VecModel};
+use windows::core::Interface;
+use windows::Win32::Foundation::*;
+use windows::Win32::Media::Audio::*;
+use windows::Win32::System::Com::*;
+use windows::Win32::System::Diagnostics::ToolHelp::*;
+use windows::Win32::UI::WindowsAndMessaging::*;
 
-use crate::background::Request;
-use crate::lyrics::{self, Fetch, Lyrics};
-use crate::media::{format_time, Media, Track};
-use crate::tint;
-use crate::{AppWindow, LyricLine, LyricsMode, NowPlaying, Palette};
-
-pub struct Player {
-    pub media: Option<Media>,
-    track: Option<Track>,
-    lyrics: Option<Lyrics>,
-    /// Baris yang sedang disorot, supaya UI hanya diubah saat baris berganti.
-    shown_line: Option<Option<usize>>,
-    lines: Rc<VecModel<LyricLine>>,
+/// Executable behind a media session's app id, for desktop apps we can look at.
+pub fn exe_of(aumid: &str) -> Option<String> {
+    let l = aumid.to_lowercase();
+    if l.ends_with(".exe") {
+        return l.rsplit(['\\', '/']).next().map(str::to_string);
+    }
+    // the Microsoft Store build of Spotify still runs Spotify.exe
+    if l.contains("spotify") {
+        return Some("spotify.exe".into());
+    }
+    None
 }
 
-impl Player {
-    pub fn new(ui: &AppWindow) -> Self {
-        let lines = Rc::new(VecModel::default());
-        ui.set_lyric_lines(ModelRc::from(lines.clone()));
-        Self { media: None, track: None, lyrics: None, shown_line: None, lines }
+pub struct Watch {
+    exe: Option<String>,
+    pids: Vec<u32>,
+    pids_at: Option<Instant>,
+    /// since when the player has looked closed (no window, no sound) while saying "playing"
+    gone_since: Option<Instant>,
+}
+
+/// The player must look closed for this long before we believe it.
+const GONE_AFTER: Duration = Duration::from_millis(300);
+
+impl Watch {
+    pub fn new() -> Watch {
+        Watch { exe: None, pids: Vec::new(), pids_at: None, gone_since: None }
     }
 
-    pub fn playing(&self) -> bool {
-        self.track.as_ref().is_some_and(|t| t.playing)
+    fn set_exe(&mut self, exe: Option<String>) {
+        if exe != self.exe {
+            self.exe = exe;
+            self.pids_at = None;
+            self.gone_since = None;
+        }
     }
 
-    /// Mengembalikan permintaan lirik bila lagunya baru.
-    pub fn set_track(&mut self, ui: &AppWindow, track: Option<Track>) -> Option<Request> {
-        let new_song = match (&self.track, &track) {
-            (Some(old), Some(new)) => !old.same_song(new),
-            (None, Some(_)) => true,
-            _ => false,
-        };
-        self.track = track;
-
-        let Some(t) = &self.track else {
-            self.lyrics = None;
-            ui.set_now(NowPlaying::default());
-            ui.set_has_cover(false);
-            return None;
-        };
-
-        let request = new_song.then(|| {
-            self.lyrics = None;
-            self.shown_line = None;
-            self.lines.set_vec(Vec::new());
-            ui.set_lyric_current(-1);
-            ui.set_has_cover(false);
-            ui.set_has_tint(false);
-            show_status(ui, "Mencari lirik…");
-            Request::Lyrics {
-                key: key(t),
-                title: t.title.clone(),
-                artist: t.artist.clone(),
-                album: t.album.clone(),
-                duration: t.duration,
-            }
-        });
-        self.refresh(ui);
-        request
-    }
-
-    pub fn set_cover(&self, ui: &AppWindow, title: &str, cover: Option<SharedPixelBuffer<Rgba8Pixel>>) {
-        if self.track.as_ref().is_none_or(|t| t.title != title) {
+    fn refresh_pids(&mut self, max_age: Duration) {
+        let Some(exe) = &self.exe else { return };
+        if self.pids_at.map(|t| t.elapsed() < max_age).unwrap_or(false) {
             return;
         }
-        let Some(buffer) = cover else {
-            ui.set_has_cover(false);
-            ui.set_has_tint(false);
-            return;
-        };
-        // Warna garis waktu dan kotak lirik mengikuti cover, dijaga beda dari latar island.
-        let ink = ui.global::<Palette>().get_ink();
-        let pixels: Vec<[u8; 4]> = buffer.as_slice().iter().map(|p| [p.r, p.g, p.b, p.a]).collect();
-        match tint::from_cover(&pixels, (ink.red(), ink.green(), ink.blue())) {
-            Some(t) => {
-                let rgb = |(r, g, b): tint::Rgb| Color::from_rgb_u8(r, g, b);
-                ui.set_tint(rgb(t.accent));
-                ui.set_tint_card(rgb(t.card));
-                ui.set_has_tint(true);
-            }
-            None => ui.set_has_tint(false),
-        }
-        ui.set_cover(Image::from_rgba8(buffer));
-        ui.set_has_cover(true);
+        self.pids = pids_of(exe);
+        self.pids_at = Some(Instant::now());
     }
 
-    pub fn set_lyrics(&mut self, ui: &AppWindow, for_key: &str, result: Fetch) {
-        if self.track.as_ref().is_none_or(|t| key(t) != for_key) {
-            return; // lagu sudah berganti
+    /// Cheap check for the polling loop: true when the player has no window left and no
+    /// sound, i.e. a full re-read is worth doing now.
+    pub fn suspicious(&mut self) -> bool {
+        if self.exe.is_none() {
+            return false;
         }
-        self.shown_line = None;
-        match result {
-            Fetch::Found(Lyrics::Synced(lines)) => {
-                let rows: Vec<LyricLine> = lines
-                    .iter()
-                    .map(|(at, text)| LyricLine { text: text.as_str().into(), seconds: at.as_secs_f32() })
-                    .collect();
-                self.lines.set_vec(rows);
-                ui.set_lyric_current(-1);
-                ui.set_lyrics_mode(LyricsMode::Synced);
-                self.lyrics = Some(Lyrics::Synced(lines));
-            }
-            Fetch::Found(Lyrics::Plain(text)) => {
-                ui.set_lyrics_plain(text.as_str().into());
-                ui.set_lyrics_mode(LyricsMode::Plain);
-                self.lyrics = Some(Lyrics::Plain(text));
-            }
-            Fetch::Found(Lyrics::Instrumental) => show_status(ui, "Lagu instrumental, tanpa lirik"),
-            Fetch::NotFound => show_status(ui, "Lirik tidak ditemukan"),
-            Fetch::Failed => show_status(ui, "Lirik gagal dimuat. Periksa koneksi internet"),
-        }
-        self.refresh(ui);
+        self.refresh_pids(Duration::from_secs(3));
+        !has_window(&self.pids) && !audio_active(&self.pids)
     }
 
-    /// Perbarui posisi, garis waktu, dan baris lirik.
-    pub fn refresh(&mut self, ui: &AppWindow) {
-        let Some(t) = &self.track else { return };
-        let position = t.position();
-        let progress = if t.duration.is_zero() { 0.0 } else { position.as_secs_f32() / t.duration.as_secs_f32() };
-        ui.set_now(NowPlaying {
-            available: true,
-            playing: t.playing,
-            can_seek: t.can_seek,
-            title: or(&t.title, "Tanpa judul"),
-            artist: or(&t.artist, "Spotify"),
-            progress,
-            position: format_time(position).into(),
-            duration: format_time(t.duration).into(),
-        });
-
-        if let Some(Lyrics::Synced(lines)) = &self.lyrics {
-            let current = lyrics::index_at(lines, position);
-            if self.shown_line != Some(current) {
-                self.shown_line = Some(current);
-                ui.set_lyric_current(current.map_or(-1, |i| i as i32));
-            }
+    /// Called for a session that reports "playing": has its player actually been closed?
+    pub fn closed(&mut self, aumid: &str) -> bool {
+        self.set_exe(exe_of(aumid));
+        if self.exe.is_none() {
+            return false;
         }
+        self.refresh_pids(Duration::from_millis(900));
+        let window = has_window(&self.pids);
+        let sound = !window && audio_active(&self.pids);
+        let looks_gone = self.pids.is_empty() || (!window && !sound);
+        if !looks_gone {
+            self.gone_since = None;
+            return false;
+        }
+        let since = *self.gone_since.get_or_insert_with(Instant::now);
+        crate::app::dbg_log(&format!(
+            "player: {} looks closed for {} ms (procs={} window={window} sound={sound})",
+            self.exe.as_deref().unwrap_or("?"),
+            since.elapsed().as_millis(),
+            self.pids.len()
+        ));
+        since.elapsed() >= GONE_AFTER
     }
 
-    pub fn seek(&mut self, fraction: f32) {
-        let Some(t) = &self.track else { return };
-        self.seek_to(t.duration.as_secs_f32() * fraction.clamp(0.0, 1.0));
+    /// The session isn't "playing" (or is gone): forget any half-finished suspicion.
+    pub fn reset(&mut self) {
+        self.gone_since = None;
     }
 
-    /// Lompat ke detik tertentu, mis. saat baris lirik diklik.
-    pub fn seek_to(&mut self, seconds: f32) {
-        let (Some(media), Some(t)) = (&self.media, &self.track) else { return };
-        if t.can_seek && !t.duration.is_zero() {
-            media.seek(Duration::from_secs_f32(seconds.clamp(0.0, t.duration.as_secs_f32())));
-        }
+    pub fn pending(&self) -> bool {
+        self.gone_since.is_some()
     }
 }
 
-fn show_status(ui: &AppWindow, text: &str) {
-    ui.set_lyrics_status(text.into());
-    ui.set_lyrics_mode(LyricsMode::Status);
+fn pids_of(exe: &str) -> Vec<u32> {
+    let mut v = Vec::new();
+    unsafe {
+        let Ok(snap) = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) else { return v };
+        let mut e = PROCESSENTRY32W { dwSize: std::mem::size_of::<PROCESSENTRY32W>() as u32, ..Default::default() };
+        if Process32FirstW(snap, &mut e).is_ok() {
+            loop {
+                let len = e.szExeFile.iter().position(|&c| c == 0).unwrap_or(0);
+                if String::from_utf16_lossy(&e.szExeFile[..len]).eq_ignore_ascii_case(exe) {
+                    v.push(e.th32ProcessID);
+                }
+                if Process32NextW(snap, &mut e).is_err() {
+                    break;
+                }
+            }
+        }
+        let _ = CloseHandle(snap);
+    }
+    v
 }
 
-fn key(t: &Track) -> String {
-    format!("{}\u{1f}{}", t.title, t.artist)
+struct Find<'a> {
+    pids: &'a [u32],
+    found: bool,
 }
 
-fn or(value: &str, fallback: &str) -> SharedString {
-    if value.trim().is_empty() { fallback.into() } else { value.into() }
+unsafe extern "system" fn enum_cb(h: HWND, lp: LPARAM) -> BOOL {
+    let f = &mut *(lp.0 as *mut Find);
+    let mut pid = 0u32;
+    GetWindowThreadProcessId(h, Some(&mut pid));
+    // a visible, titled top-level window (minimized windows count as visible)
+    if f.pids.contains(&pid) && IsWindowVisible(h).as_bool() && GetWindowTextLengthW(h) > 0 {
+        f.found = true;
+        return FALSE;
+    }
+    TRUE
+}
+
+fn has_window(pids: &[u32]) -> bool {
+    if pids.is_empty() {
+        return false;
+    }
+    let mut f = Find { pids, found: false };
+    unsafe {
+        let _ = EnumWindows(Some(enum_cb), LPARAM(&mut f as *mut Find as isize));
+    }
+    f.found
+}
+
+/// Does any of these processes have an active audio stream on any output device?
+/// (When this can't be checked, assume it does, so nothing is hidden by mistake.)
+fn audio_active(pids: &[u32]) -> bool {
+    if pids.is_empty() {
+        return false;
+    }
+    unsafe {
+        let Ok(en) = CoCreateInstance::<_, IMMDeviceEnumerator>(&MMDeviceEnumerator, None, CLSCTX_ALL) else { return true };
+        let Ok(devs) = en.EnumAudioEndpoints(eRender, DEVICE_STATE_ACTIVE) else { return true };
+        for d in 0..devs.GetCount().unwrap_or(0) {
+            let Ok(dev) = devs.Item(d) else { continue };
+            let Ok(mgr) = dev.Activate::<IAudioSessionManager2>(CLSCTX_ALL, None) else { continue };
+            let Ok(list) = mgr.GetSessionEnumerator() else { continue };
+            for i in 0..list.GetCount().unwrap_or(0) {
+                let Ok(c) = list.GetSession(i) else { continue };
+                let Ok(c2) = c.cast::<IAudioSessionControl2>() else { continue };
+                if pids.contains(&c2.GetProcessId().unwrap_or(0))
+                    && c.GetState().map(|s| s == AudioSessionStateActive).unwrap_or(false)
+                {
+                    return true;
+                }
+            }
+        }
+    }
+    false
 }
