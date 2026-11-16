@@ -81,6 +81,11 @@ System notices: volume and brightness HUD, Caps Lock, keyboard language changes,
 charger plugged/unplugged, low battery, Wi-Fi connected or lost, audio output/headphones changed, text copied.
 The island hides itself while a full-screen app or presentation is running.
 
+**Several displays:** every display gets its own island, and they all show the same thing (the cat,
+the song, notices). The panel opens on the display you click; clicking the island on another display
+moves it there. A full-screen app only hides the island of the display it runs on. Plugging a display
+in or out adds or removes its island.
+
 On the first run after installing, **Start with Windows** and **Add screenshots to Shelf** are on.
 Both can be switched off in the menu, and stay off after that.
 

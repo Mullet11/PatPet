@@ -160,6 +160,13 @@ impl IDropTarget_Impl for DropTarget_Impl {
     }
 }
 
+/// The window is going away (its display was unplugged).
+pub fn unregister(hwnd: HWND) {
+    unsafe {
+        let _ = RevokeDragDrop(hwnd);
+    }
+}
+
 pub fn register(hwnd: HWND) {
     unsafe {
         let t: IDropTarget = DropTarget.into();

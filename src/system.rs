@@ -8,7 +8,7 @@ use windows::Networking::Connectivity::*;
 use windows::Win32::Devices::FunctionDiscovery::PKEY_Device_FriendlyName;
 use windows::Win32::Foundation::*;
 use windows::Win32::Globalization::*;
-use windows::Win32::Graphics::Gdi::{GetMonitorInfoW, MonitorFromPoint, MONITORINFO, MONITOR_DEFAULTTOPRIMARY};
+use windows::Win32::Graphics::Gdi::{GetMonitorInfoW, HMONITOR, MONITORINFO};
 use windows::Win32::Media::Audio::Endpoints::*;
 use windows::Win32::Media::Audio::*;
 use windows::Win32::System::Com::*;
@@ -324,12 +324,11 @@ fn front_kind(class: &str) -> Front {
     }
 }
 
-unsafe fn covers_primary(h: HWND) -> bool {
+unsafe fn covers(h: HWND, hm: HMONITOR) -> bool {
     // a normal maximized window, which fills the screen too when the taskbar auto-hides
     if IsZoomed(h).as_bool() && GetWindowLongW(h, GWL_STYLE) as u32 & WS_THICKFRAME.0 != 0 {
         return false;
     }
-    let hm = MonitorFromPoint(POINT { x: 0, y: 0 }, MONITOR_DEFAULTTOPRIMARY);
     let mut mi = MONITORINFO { cbSize: std::mem::size_of::<MONITORINFO>() as u32, ..Default::default() };
     let mut r = RECT::default();
     if !GetMonitorInfoW(hm, &mut mi).as_bool() || GetWindowRect(h, &mut r).is_err() {
@@ -339,11 +338,11 @@ unsafe fn covers_primary(h: HWND) -> bool {
     r.left <= m.left && r.top <= m.top && r.right >= m.right && r.bottom >= m.bottom
 }
 
-/// Whether a full-screen app is in front of the primary screen (where the island lives).
+/// Whether a full-screen app is in front on display `hm` (each display has its own island).
 /// Windows keeps answering "busy" for as long as some games stay open behind other windows,
 /// so that answer only counts while the foreground window really fills the screen.
 /// `prev` is the last result, kept while the foreground is changing hands.
-pub fn fullscreen_busy(prev: bool) -> bool {
+pub fn fullscreen_busy(prev: bool, hm: HMONITOR) -> bool {
     unsafe {
         let s = match SHQueryUserNotificationState() {
             Ok(s) => s,
@@ -364,7 +363,7 @@ pub fn fullscreen_busy(prev: bool) -> bool {
         match front_kind(&String::from_utf16_lossy(&b[..n])) {
             Front::Shell => false,
             Front::Switching => prev,
-            Front::App => covers_primary(fg),
+            Front::App => covers(fg, hm),
         }
     }
 }

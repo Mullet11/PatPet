@@ -411,37 +411,23 @@ const TIMER_TICK: usize = 2;
 // ------------------------------------------------------------------ app
 
 pub struct App {
+    /// the main window (primary display): timers, tray, clipboard and frame pacing talk to it
     pub hwnd: HWND,
+    /// the island being worked on (the primary display's, except inside `each` / `route`)
+    s: Surface,
+    /// the islands on the other displays
+    others: Vec<Surface>,
+    /// the window of the island the panel opens (or last opened) on
+    home: HWND,
+    /// the window whose island the context menu was opened on
+    menu_on: HWND,
     gfx: Gfx,
     pub data: Data,
     dirty: bool,
-    mon_cx: i32,
-    mon_top: i32,
-    sw: Spring,
     last_min: i64,
-    sh: Spring,
-    sr: Spring,
-    view: ViewKey,
-    view_age: f32,
-    /// content size for `view`, worked out together with it (see draw)
-    view_wh: Option<(f32, f32)>,
-    /// the line came from the closed pill (its content fades out as it shrinks); from the open
-    /// island or a notice it shrinks empty
-    line_from_pill: bool,
-    /// the pill came down out of the line: its content slides down with it instead of fading in
-    pill_from_line: bool,
-    /// the screen's center in window coordinates: fixed on screen, unlike the center of an
-    /// island whose width moves by whole pixels
-    screen_cx: f32,
-    /// right after closing in line mode: do not treat the cursor as hovering (see tick)
-    no_hover_until: Option<Instant>,
     expanded: bool,
     tab: Tab,
     lyrics_open: bool,
-    hits: Vec<(R, Act)>,
-    mouse: Option<(f32, f32)>,
-    tracking: bool,
-    press: Option<(Option<Act>, f32, f32)>,
     media: Option<MediaState>,
     art: Option<ID2D1Bitmap>,
     art_color: C,
@@ -502,17 +488,13 @@ pub struct App {
     /// the mouse has been over the panel since it opened (a panel opened from the tray, with
     /// the cursor far away, must not close by itself right away)
     panel_entered: bool,
-    hidden: bool,
     anim_on: bool,
     last_frame: Instant,
     t0: Instant,
     last_sec: Instant,
     tick_ms: u32,
-    win: (i32, i32, i32, i32),
-    isl_px: (i32, i32, i32, i32),
     demo: bool,
     demo_idle: bool,
-    slide: Option<Slide>,
     /// Selected shelf paths. Dragging a selected tile carries the whole selection.
     shelf_sel: Vec<String>,
     /// hidden by the user from the menu (separate from auto-hiding in full screen)
@@ -531,21 +513,8 @@ pub struct App {
     anim_stat: (Instant, u32),
     /// the running animation changed what is shown (not just a hover): trim memory afterwards
     anim_view_change: bool,
-    /// hover progress 0..1 and its velocity, driven by its own spring
-    hov: f32,
-    hov_v: f32,
-    /// hover as decided after the intent delays
-    hover_on: bool,
-    /// when the cursor entered / left the island
-    hover_in: Option<Instant>,
-    hover_out: Option<Instant>,
     /// last seen modification time of theme.json (reloaded when it changes)
     theme_mtime: Option<std::time::SystemTime>,
-    /// how far the open (expanded) colors are faded in, 0..1
-    open_k: f32,
-    /// a long line under the mouse is sliding (keeps frames coming), and which one since when
-    marquee_on: std::cell::Cell<bool>,
-    marquee_at: std::cell::Cell<Option<(u64, Instant)>>,
     /// a newer release found on GitHub
     upd_avail: Option<update::Release>,
     /// checking or installing right now
@@ -571,30 +540,153 @@ pub struct App {
     room_step: Instant,
     room_rng: u32,
     cat_frame: (Mood, usize),
-    /// where the cat was drawn last (window DIP), for stroking it with the mouse
-    cat_rect: std::cell::Cell<Option<R>>,
-    /// stroking in progress: sideways travel so far, last x, when it started
-    stroke: Option<(f32, f32, Instant)>,
     /// when the hearts of a happy cat started floating
     hearts_at: Option<Instant>,
 }
 
-fn monitor() -> (i32, i32, f32) {
-    unsafe {
-        let hm = MonitorFromPoint(POINT { x: 0, y: 0 }, MONITOR_DEFAULTTOPRIMARY);
+/// A display: where the top of the screen is centred, its DPI scale and its handle.
+#[derive(Clone, Copy, Default)]
+struct Display {
+    cx: i32,
+    top: i32,
+    scale: f32,
+    handle: HMONITOR,
+}
+
+/// Every display, the primary one first.
+fn displays() -> Vec<Display> {
+    unsafe extern "system" fn add(hm: HMONITOR, _: HDC, _: *mut RECT, lp: LPARAM) -> BOOL {
+        let list = &mut *(lp.0 as *mut Vec<Display>);
         let mut mi = MONITORINFO { cbSize: std::mem::size_of::<MONITORINFO>() as u32, ..Default::default() };
-        let _ = GetMonitorInfoW(hm, &mut mi);
-        let (mut dx, mut dy) = (96u32, 96u32);
-        let _ = GetDpiForMonitor(hm, MDT_EFFECTIVE_DPI, &mut dx, &mut dy);
-        let r = mi.rcMonitor;
-        ((r.left + r.right) / 2, r.top, dx as f32 / 96.0)
+        if GetMonitorInfoW(hm, &mut mi).as_bool() {
+            let (mut dx, mut dy) = (96u32, 96u32);
+            let _ = GetDpiForMonitor(hm, MDT_EFFECTIVE_DPI, &mut dx, &mut dy);
+            let r = mi.rcMonitor;
+            let d = Display { cx: (r.left + r.right) / 2, top: r.top, scale: dx as f32 / 96.0, handle: hm };
+            // MONITORINFOF_PRIMARY
+            if mi.dwFlags & 1 != 0 {
+                list.insert(0, d);
+            } else {
+                list.push(d);
+            }
+        }
+        TRUE
+    }
+    let mut list: Vec<Display> = Vec::new();
+    unsafe {
+        let _ = EnumDisplayMonitors(HDC::default(), None, Some(add), LPARAM(&mut list as *mut Vec<Display> as isize));
+    }
+    if list.is_empty() {
+        // no answer: the primary display alone
+        unsafe {
+            let hm = MonitorFromPoint(POINT { x: 0, y: 0 }, MONITOR_DEFAULTTOPRIMARY);
+            let mut mi = MONITORINFO { cbSize: std::mem::size_of::<MONITORINFO>() as u32, ..Default::default() };
+            let _ = GetMonitorInfoW(hm, &mut mi);
+            let (mut dx, mut dy) = (96u32, 96u32);
+            let _ = GetDpiForMonitor(hm, MDT_EFFECTIVE_DPI, &mut dx, &mut dy);
+            let r = mi.rcMonitor;
+            list.push(Display { cx: (r.left + r.right) / 2, top: r.top, scale: dx as f32 / 96.0, handle: hm });
+        }
+    }
+    list
+}
+
+/// One island. There is one per display, each in its own window; they all show the same
+/// thing, except that the open panel is only on the display it was opened on (`App::home`).
+struct Surface {
+    hwnd: HWND,
+    display: Display,
+    mon_cx: i32,
+    mon_top: i32,
+    sw: Spring,
+    sh: Spring,
+    sr: Spring,
+    view: ViewKey,
+    view_age: f32,
+    /// content size for `view`, worked out together with it (see draw)
+    view_wh: Option<(f32, f32)>,
+    /// the line came from the closed pill (its content fades out as it shrinks); from the open
+    /// island or a notice it shrinks empty
+    line_from_pill: bool,
+    /// the pill came down out of the line: its content slides down with it instead of fading in
+    pill_from_line: bool,
+    /// the screen's center in window coordinates: fixed on screen, unlike the center of an
+    /// island whose width moves by whole pixels
+    screen_cx: f32,
+    /// right after closing in line mode: do not treat the cursor as hovering (see tick)
+    no_hover_until: Option<Instant>,
+    hits: Vec<(R, Act)>,
+    mouse: Option<(f32, f32)>,
+    tracking: bool,
+    press: Option<(Option<Act>, f32, f32)>,
+    slide: Option<Slide>,
+    /// not on screen: hidden by the user, or a full-screen app is in front on this display
+    hidden: bool,
+    win: (i32, i32, i32, i32),
+    isl_px: (i32, i32, i32, i32),
+    /// hover progress 0..1 and its velocity, driven by its own spring
+    hov: f32,
+    hov_v: f32,
+    /// hover as decided after the intent delays
+    hover_on: bool,
+    /// when the cursor entered / left the island
+    hover_in: Option<Instant>,
+    hover_out: Option<Instant>,
+    /// how far the open (expanded) colors are faded in, 0..1
+    open_k: f32,
+    /// a long line under the mouse is sliding (keeps frames coming), and which one since when
+    marquee_on: std::cell::Cell<bool>,
+    marquee_at: std::cell::Cell<Option<(u64, Instant)>>,
+    /// where the cat was drawn last (window DIP), for stroking it with the mouse
+    cat_rect: std::cell::Cell<Option<R>>,
+    /// stroking in progress: sideways travel so far, last x, when it started
+    stroke: Option<(f32, f32, Instant)>,
+}
+
+impl Surface {
+    fn new(hwnd: HWND, display: Display) -> Surface {
+        Surface {
+            hwnd,
+            display,
+            mon_cx: display.cx,
+            mon_top: display.top,
+            sw: Spring::new(40.0),
+            sh: Spring::new(20.0),
+            sr: Spring::new(10.0),
+            view: ViewKey::Compact(Live::Idle),
+            view_age: 0.0,
+            view_wh: None,
+            line_from_pill: false,
+            pill_from_line: false,
+            screen_cx: 0.0,
+            no_hover_until: None,
+            hits: Vec::new(),
+            mouse: None,
+            tracking: false,
+            press: None,
+            slide: None,
+            hidden: false,
+            win: (0, 0, 0, 0),
+            isl_px: (0, 0, 0, 0),
+            hov: 0.0,
+            hov_v: 0.0,
+            hover_on: false,
+            hover_in: None,
+            hover_out: None,
+            open_k: 0.0,
+            marquee_on: std::cell::Cell::new(false),
+            marquee_at: std::cell::Cell::new(None),
+            cat_rect: std::cell::Cell::new(None),
+            stroke: None,
+        }
     }
 }
 
+
 impl App {
     pub fn new(hwnd: HWND) -> windows::core::Result<App> {
-        let (cx, top, scale) = monitor();
-        let mut gfx = Gfx::new(scale)?;
+        let primary = displays().into_iter().next().unwrap_or_default();
+        let mut gfx = Gfx::new(primary.scale)?;
         theme::ensure_file();
         let th = theme::load();
         gfx.set_theme(&th);
@@ -614,29 +706,17 @@ impl App {
         let n = Instant::now();
         let app = App {
             hwnd,
+            s: Surface::new(hwnd, primary),
+            others: Vec::new(),
+            home: hwnd,
+            menu_on: hwnd,
             gfx,
             data,
             dirty: false,
-            mon_cx: cx,
-            mon_top: top,
-            sw: Spring::new(40.0),
             last_min: 0,
-            sh: Spring::new(20.0),
-            sr: Spring::new(10.0),
-            view: ViewKey::Compact(Live::Idle),
-            view_age: 0.0,
-            view_wh: None,
-            line_from_pill: false,
-            pill_from_line: false,
-            screen_cx: 0.0,
-            no_hover_until: None,
             expanded: false,
             tab: Tab::Pet,
             lyrics_open: false,
-            hits: Vec::new(),
-            mouse: None,
-            tracking: false,
-            press: None,
             media: None,
             art: None,
             art_color: MEDIA_C,
@@ -682,17 +762,13 @@ impl App {
             drag_expanded: false,
             collapse_at: None,
             panel_entered: false,
-            hidden: false,
             anim_on: false,
             last_frame: n,
             t0: n,
             last_sec: n,
             tick_ms: 0,
-            win: (0, 0, 0, 0),
-            isl_px: (0, 0, 0, 0),
             demo: false,
             demo_idle: false,
-            slide: None,
             shelf_sel: Vec::new(),
             user_hidden: false,
             edit: None,
@@ -704,15 +780,7 @@ impl App {
             trim_at: Some(n + Duration::from_secs(5)),
             anim_stat: (n, 0),
             anim_view_change: false,
-            hov: 0.0,
-            hov_v: 0.0,
-            hover_on: false,
-            hover_in: None,
-            hover_out: None,
             theme_mtime: theme::modified(),
-            open_k: 0.0,
-            marquee_on: std::cell::Cell::new(false),
-            marquee_at: std::cell::Cell::new(None),
             upd_avail: None,
             upd_busy: false,
             upd_manual: false,
@@ -729,8 +797,6 @@ impl App {
             room_step: n,
             room_rng: 0x9E37_79B9,
             cat_frame: (Mood::Idle, 0),
-            cat_rect: std::cell::Cell::new(None),
-            stroke: None,
             hearts_at: None,
         };
         clip::listen(hwnd);
@@ -746,26 +812,30 @@ impl App {
                 let (x, y) = m.split_once(',')?;
                 Some((x.trim().parse::<f32>().ok()?, y.trim().parse::<f32>().ok()?))
             }) {
-                self.mouse = Some((x / self.gfx.scale, y / self.gfx.scale));
+                self.s.mouse = Some((x / self.gfx.scale, y / self.gfx.scale));
             }
         }
-        self.pop_in();
+        // the other displays get their islands (demo screenshots stay on the primary one)
+        if !self.demo {
+            self.sync_displays();
+        }
+        self.each(|a| a.pop_in());
         self.kick();
     }
 
     /// Opening transition: start as a thin sliver at the top edge and spring out to size.
     fn pop_in(&mut self) {
         let (tw, _, _, _) = self.target();
-        self.sw = Spring::new(tw * POP_W);
-        self.sh = Spring::new(0.0);
-        self.sr = Spring::new(0.0);
-        self.view_age = 0.0;
+        self.s.sw = Spring::new(tw * POP_W);
+        self.s.sh = Spring::new(0.0);
+        self.s.sr = Spring::new(0.0);
+        self.s.view_age = 0.0;
         self.kick();
     }
 
     /// Closing transition: fold the island back into the top edge, then quit or hide.
     fn leave(&mut self, what: Leave) {
-        if self.hidden {
+        if self.all_hidden() {
             // nothing on screen to animate
             self.finish_leave(what);
             return;
@@ -789,10 +859,12 @@ impl App {
         match what {
             // WM_CLOSE goes through DestroyWindow -> WM_DESTROY, which saves the data
             Leave::Quit => unsafe {
-                // stay hidden for the few messages left before the window goes away
+                // stay hidden for the few messages left before the windows go away
                 self.user_hidden = true;
-                self.hidden = true;
-                let _ = ShowWindow(self.hwnd, SW_HIDE);
+                self.each(|a| {
+                    a.s.hidden = true;
+                    let _ = ShowWindow(a.s.hwnd, SW_HIDE);
+                });
                 let _ = PostMessageW(self.hwnd, WM_CLOSE, WPARAM(0), LPARAM(0));
             },
             Leave::Hide => {
@@ -1103,14 +1175,16 @@ impl App {
             self.tab
         });
         self.tab = t;
-        if !self.expanded {
+        // the panel opens on this display (closing on another one if it was open there)
+        if !self.expanded || self.home != self.s.hwnd {
             self.panel_entered = self.cursor_inside();
         }
+        self.home = self.s.hwnd;
         self.expanded = true;
         self.toast = None;
         self.collapse_at = None;
         unsafe {
-            let _ = SetForegroundWindow(self.hwnd);
+            let _ = SetForegroundWindow(self.home);
         }
         if self.tab == Tab::Media && self.lyrics_open {
             self.ensure_lyrics();
@@ -1126,16 +1200,20 @@ impl App {
         self.drag_expanded = false;
         system::watch_clicks(false);
         self.collapse_at = None;
-        self.press = None;
-        if self.data.settings.line_mode {
-            // The cursor was over the open panel (Esc) or just clicked outside it: that is not a
-            // hover on the line, so close straight to the line. A cursor really resting on the
-            // line still opens it with its next movement.
-            self.mouse = None;
-            self.tracking = false;
-            self.hover_on = false;
-            self.no_hover_until = Some(Instant::now() + Duration::from_millis(350));
-        }
+        let line_mode = self.data.settings.line_mode;
+        let home = self.home;
+        self.on(home, |a| {
+            a.s.press = None;
+            if line_mode {
+                // The cursor was over the open panel (Esc) or just clicked outside it: that is
+                // not a hover on the line, so close straight to the line. A cursor really resting
+                // on the line still opens it with its next movement.
+                a.s.mouse = None;
+                a.s.tracking = false;
+                a.s.hover_on = false;
+                a.s.no_hover_until = Some(Instant::now() + Duration::from_millis(350));
+            }
+        });
         self.kick();
     }
 
@@ -1144,9 +1222,9 @@ impl App {
     fn target(&self) -> (f32, f32, f32, ViewKey) {
         if let Some((_, _, w)) = self.leaving {
             // keep the current view so its content simply fades while the shape sinks away
-            return (w, 0.0, 0.0, self.view);
+            return (w, 0.0, 0.0, self.s.view);
         }
-        if self.expanded {
+        if self.expanded && self.s.hwnd == self.home {
             let lyr = self.tab == Tab::Media && self.lyrics_open && self.media.is_some();
             let (w, h) = match self.tab {
                 Tab::Pet => (500.0, 264.0),
@@ -1158,7 +1236,7 @@ impl App {
             };
             return (w, h, 30.0, ViewKey::Expanded(self.tab, lyr));
         }
-        if !self.hidden {
+        if !self.s.hidden {
             if let Some(t) = &self.toast {
                 if t.level.is_some() {
                     return (320.0, 40.0, 16.0, ViewKey::Toast(t.id));
@@ -1174,7 +1252,7 @@ impl App {
                 return (w, TWO_H, 20.0, ViewKey::Toast(t.id));
             }
         }
-        if self.data.settings.line_mode && !self.hover_on && !self.drag_hover && !self.hidden {
+        if self.data.settings.line_mode && !self.s.hover_on && !self.drag_here() && !self.s.hidden {
             return (LINE_W, LINE_H, LINE_H / 2.0, ViewKey::Line);
         }
         let (live, sec) = self.lives();
@@ -1247,77 +1325,6 @@ impl App {
         let dt = (n - self.last_frame).as_secs_f32().min(1.0 / 30.0);
         self.last_frame = n;
         self.anim_stat.1 += 1;
-        let (tw, th, tr, key) = self.target();
-        let hover_still = self.step_hover(n, dt, key);
-        self.view_wh = Some((tw, th));
-        if key != self.view {
-            self.anim_view_change = true;
-            match (self.view, key) {
-                // switching feature while open: slide instead of fade
-                (ViewKey::Expanded(a, al), ViewKey::Expanded(b, _)) if a != b && self.view_age > 0.05 => {
-                    let idx = |t: Tab| TABS.iter().position(|x| *x == t).unwrap_or(0) as f32;
-                    self.slide = Some(Slide {
-                        from_tab: a,
-                        from_lyr: al,
-                        from_w: self.sw.t,
-                        from_h: self.sh.t,
-                        dir: (idx(b) - idx(a)).signum(),
-                        t: 0.0,
-                    });
-                }
-                _ => {
-                    self.slide = None;
-                    self.view_age = 0.0;
-                }
-            }
-            if key == ViewKey::Line {
-                self.line_from_pill = matches!(self.view, ViewKey::Compact(_));
-            }
-            self.pill_from_line = matches!(key, ViewKey::Compact(_)) && self.view == ViewKey::Line && self.sh.x < PILL_H;
-            self.view = key;
-        }
-        if let Some(sl) = &mut self.slide {
-            sl.t += dt / SLIDE_SECS;
-            if sl.t >= 1.0 {
-                self.slide = None;
-            }
-        }
-        self.sw.t = tw;
-        self.sh.t = th;
-        self.sr.t = tr;
-        // line mode, between the line and the pill (not a panel or notice closing to the line)
-        let line_pill = self.data.settings.line_mode
-            && self.leaving.is_none()
-            && match self.view {
-                ViewKey::Line => self.line_from_pill,
-                ViewKey::Compact(_) => true,
-                _ => false,
-            };
-        let mut rem = dt;
-        while rem > 0.0 {
-            let s = rem.min(1.0 / 240.0);
-            if line_pill {
-                let (ww, hw) = if self.view == ViewKey::Line {
-                    (LINE_SPRING_W, LINE_RISE)
-                } else {
-                    (LINE_DROP_WIDEN, LINE_DROP_FALL)
-                };
-                self.sw.step_fast(s, ww);
-                self.sh.step_fast(s, hw);
-                self.sr.step_fast(s, hw);
-            } else {
-                self.sw.step(s);
-                self.sh.step(s);
-                self.sr.step(s);
-            }
-            rem -= s;
-        }
-        self.view_age += dt;
-        // closed ↔ open colors: ease toward the open colors while expanded
-        let open_t = if matches!(self.view, ViewKey::Expanded(..)) { 1.0 } else { 0.0 };
-        let open_moving = (open_t - self.open_k).abs() > 0.003;
-        self.open_k = if open_moving { self.open_k + (open_t - self.open_k) * (1.0 - (-dt * 11.0).exp()) } else { open_t };
-        self.gfx.set_open(self.open_k);
         // shelf: slide toward the scroll position (ease-out)
         self.shelf_scroll = self.shelf_scroll.min(self.shelf_max());
         let target = self.shelf_scroll as f32;
@@ -1339,39 +1346,26 @@ impl App {
             }
             lyr_moving = d.abs() > 0.004;
         }
+        // every island moves on a frame and is drawn
+        let mut settled = !lyr_moving && !shelf_moving && !self.hearts_on();
+        let mut folded = true;
+        self.each(|a| {
+            let (rest, gone) = a.frame_surface(n, dt);
+            settled &= rest;
+            folded &= gone;
+        });
         if let Some((what, since, _)) = self.leaving {
-            if self.sh.x <= 0.5 || since.elapsed() >= LEAVE_MAX {
-                self.render();
+            if folded || since.elapsed() >= LEAVE_MAX {
                 self.finish_leave(what);
                 return;
             }
         }
-        let dump = std::env::var("PATPET_DUMP").ok();
-        if !self.hidden || dump.is_some() {
-            self.render();
-        }
-        // testing aid: with PATPET_DEMO + PATPET_DUMP=<file.bmp>, save the settled frame and quit
-        if let Some(path) = dump {
-            if self.view_age > 0.3 && self.slide.is_none() && self.sw.done() && self.sh.done() {
-                self.gfx.dump_bmp(&path, self.win.2, self.win.3);
-                crate::quit_now();
-            }
-        }
-        let settled = self.sw.done()
-            && self.sh.done()
-            && self.sr.done()
-            && self.view_age > 0.35
-            && self.slide.is_none()
-            && !lyr_moving
-            && !shelf_moving
-            && !open_moving
-            && hover_still
-            && !self.hearts_on()
-            && !self.marquee_on.get();
         if settled {
-            self.sw.snap();
-            self.sh.snap();
-            self.sr.snap();
+            self.each(|a| {
+                a.s.sw.snap();
+                a.s.sh.snap();
+                a.s.sr.snap();
+            });
             // the animation's layer bitmaps are not needed while resting: let them go now
             self.gfx.release_layers();
             self.anim_on = false;
@@ -1394,39 +1388,137 @@ impl App {
         }
     }
 
+    /// One frame of the island being worked on: its shape springs toward what it should show,
+    /// and it is drawn. Returns (at rest, folded away into the top edge).
+    fn frame_surface(&mut self, n: Instant, dt: f32) -> (bool, bool) {
+        let (tw, th, tr, key) = self.target();
+        let hover_still = self.step_hover(n, dt, key);
+        self.s.view_wh = Some((tw, th));
+        if key != self.s.view {
+            self.anim_view_change = true;
+            match (self.s.view, key) {
+                // switching feature while open: slide instead of fade
+                (ViewKey::Expanded(a, al), ViewKey::Expanded(b, _)) if a != b && self.s.view_age > 0.05 => {
+                    let idx = |t: Tab| TABS.iter().position(|x| *x == t).unwrap_or(0) as f32;
+                    self.s.slide = Some(Slide {
+                        from_tab: a,
+                        from_lyr: al,
+                        from_w: self.s.sw.t,
+                        from_h: self.s.sh.t,
+                        dir: (idx(b) - idx(a)).signum(),
+                        t: 0.0,
+                    });
+                }
+                _ => {
+                    self.s.slide = None;
+                    self.s.view_age = 0.0;
+                }
+            }
+            if key == ViewKey::Line {
+                self.s.line_from_pill = matches!(self.s.view, ViewKey::Compact(_));
+            }
+            self.s.pill_from_line = matches!(key, ViewKey::Compact(_)) && self.s.view == ViewKey::Line && self.s.sh.x < PILL_H;
+            self.s.view = key;
+        }
+        if let Some(sl) = &mut self.s.slide {
+            sl.t += dt / SLIDE_SECS;
+            if sl.t >= 1.0 {
+                self.s.slide = None;
+            }
+        }
+        self.s.sw.t = tw;
+        self.s.sh.t = th;
+        self.s.sr.t = tr;
+        // line mode, between the line and the pill (not a panel or notice closing to the line)
+        let line_pill = self.data.settings.line_mode
+            && self.leaving.is_none()
+            && match self.s.view {
+                ViewKey::Line => self.s.line_from_pill,
+                ViewKey::Compact(_) => true,
+                _ => false,
+            };
+        let mut rem = dt;
+        while rem > 0.0 {
+            let s = rem.min(1.0 / 240.0);
+            if line_pill {
+                let (ww, hw) = if self.s.view == ViewKey::Line {
+                    (LINE_SPRING_W, LINE_RISE)
+                } else {
+                    (LINE_DROP_WIDEN, LINE_DROP_FALL)
+                };
+                self.s.sw.step_fast(s, ww);
+                self.s.sh.step_fast(s, hw);
+                self.s.sr.step_fast(s, hw);
+            } else {
+                self.s.sw.step(s);
+                self.s.sh.step(s);
+                self.s.sr.step(s);
+            }
+            rem -= s;
+        }
+        self.s.view_age += dt;
+        // closed ↔ open colors: ease toward the open colors while expanded
+        let open_t = if matches!(self.s.view, ViewKey::Expanded(..)) { 1.0 } else { 0.0 };
+        let open_moving = (open_t - self.s.open_k).abs() > 0.003;
+        self.s.open_k = if open_moving { self.s.open_k + (open_t - self.s.open_k) * (1.0 - (-dt * 11.0).exp()) } else { open_t };
+        self.gfx.set_open(self.s.open_k);
+        // testing aid: with PATPET_DEMO + PATPET_DUMP=<file.bmp>, save the primary display's
+        // settled frame and quit
+        let dump = std::env::var("PATPET_DUMP").ok().filter(|_| self.s.hwnd == self.hwnd);
+        if !self.s.hidden || dump.is_some() {
+            self.render();
+        }
+        if let Some(path) = dump {
+            if self.s.view_age > 0.3 && self.s.slide.is_none() && self.s.sw.done() && self.s.sh.done() {
+                self.gfx.dump_bmp(&path, self.s.win.2, self.s.win.3);
+                crate::quit_now();
+            }
+        }
+        let rest = self.s.sw.done()
+            && self.s.sh.done()
+            && self.s.sr.done()
+            && self.s.view_age > 0.35
+            && self.s.slide.is_none()
+            && !open_moving
+            && hover_still
+            && !self.s.marquee_on.get();
+        (rest, self.s.hidden || self.s.sh.x <= 0.5)
+    }
+
     /// Advance the hover spring. Returns true once hover is at rest (nothing pending).
     fn step_hover(&mut self, n: Instant, dt: f32, key: ViewKey) -> bool {
-        let compact = matches!(key, ViewKey::Compact(_) | ViewKey::Line) && self.leaving.is_none() && !self.hidden;
+        let compact = matches!(key, ViewKey::Compact(_) | ViewKey::Line) && self.leaving.is_none() && !self.s.hidden;
         // in line mode, stay open a little longer once the mouse leaves, so it does not flicker
         let out_delay = if self.data.settings.line_mode { LINE_OUT } else { HOVER_OUT };
         // just closed in line mode: the panel is still shrinking under the cursor, no hover yet
-        let settling = self.no_hover_until.map(|t| n < t).unwrap_or(false);
+        let settling = self.s.no_hover_until.map(|t| n < t).unwrap_or(false);
         // the island's own menu took the mouse away: it stays as it is until the menu is gone
-        let raw = compact && (self.menu_hold || (!settling && (self.mouse.is_some() || self.drag_hover)));
+        let menu_here = self.menu_hold && self.s.hwnd == self.menu_on;
+        let raw = compact && (menu_here || (!settling && (self.s.mouse.is_some() || self.drag_here())));
         // a cursor waiting out the settling time: keep frames coming so it is noticed afterwards
-        let mut pending = compact && settling && self.mouse.is_some();
+        let mut pending = compact && settling && self.s.mouse.is_some();
         if !compact {
-            self.hover_on = false;
-        } else if raw && !self.hover_on {
+            self.s.hover_on = false;
+        } else if raw && !self.s.hover_on {
             // dragging files onto the island reacts at once
-            let since = self.hover_in.map(|t| n.duration_since(t)).unwrap_or(HOVER_IN);
-            if self.drag_hover || since >= HOVER_IN {
-                self.hover_on = true;
+            let since = self.s.hover_in.map(|t| n.duration_since(t)).unwrap_or(HOVER_IN);
+            if self.drag_here() || since >= HOVER_IN {
+                self.s.hover_on = true;
             } else {
                 pending = true;
             }
-        } else if !raw && self.hover_on {
-            let since = self.hover_out.map(|t| n.duration_since(t)).unwrap_or(out_delay);
+        } else if !raw && self.s.hover_on {
+            let since = self.s.hover_out.map(|t| n.duration_since(t)).unwrap_or(out_delay);
             if since >= out_delay {
-                self.hover_on = false;
+                self.s.hover_on = false;
             } else {
                 pending = true;
             }
         }
-        let t = if self.hover_on { 1.0 } else { 0.0 };
+        let t = if self.s.hover_on { 1.0 } else { 0.0 };
         let w = if self.data.settings.line_mode {
             LINE_SPRING_W
-        } else if self.hover_on {
+        } else if self.s.hover_on {
             HOVER_W_IN
         } else {
             HOVER_W_OUT
@@ -1434,15 +1526,15 @@ impl App {
         let mut rem = dt;
         while rem > 0.0 {
             let s = rem.min(1.0 / 240.0);
-            let a = w * w * (t - self.hov) - 2.0 * w * self.hov_v;
-            self.hov_v += a * s;
-            self.hov += self.hov_v * s;
+            let a = w * w * (t - self.s.hov) - 2.0 * w * self.s.hov_v;
+            self.s.hov_v += a * s;
+            self.s.hov += self.s.hov_v * s;
             rem -= s;
         }
-        let rest = (self.hov - t).abs() < 0.004 && self.hov_v.abs() < 0.05;
+        let rest = (self.s.hov - t).abs() < 0.004 && self.s.hov_v.abs() < 0.05;
         if rest {
-            self.hov = t;
-            self.hov_v = 0.0;
+            self.s.hov = t;
+            self.s.hov_v = 0.0;
         }
         rest && !pending
     }
@@ -1451,8 +1543,8 @@ impl App {
         self.sync_thumbs();
         self.sync_cat();
         let s = self.gfx.scale;
-        let w = (self.sw.x + HOVER_W * self.hov).max(1.0);
-        let h = (self.sh.x + HOVER_H * self.hov).max(0.0);
+        let w = (self.s.sw.x + HOVER_W * self.s.hov).max(1.0);
+        let h = (self.s.sh.x + HOVER_H * self.s.hov).max(0.0);
         // extra room on both sides for the concave "shoulders" where the notch meets the screen edge
         let wpx = ((w + 2.0 * SHOULDER) * s).ceil() as i32 + 2;
         // Line mode: an invisible strip at the very top, the line plus about 1 cm each side,
@@ -1460,15 +1552,15 @@ impl App {
         // that opened it is still "on" PatPet, so the pill does not close under it, bring the
         // line (and its strip) back under the cursor and open again, over and over.
         let strip = self.data.settings.line_mode
-            && matches!(self.view, ViewKey::Line | ViewKey::Compact(_))
+            && matches!(self.s.view, ViewKey::Line | ViewKey::Compact(_))
             && self.leaving.is_none()
-            && !self.hidden;
+            && !self.s.hidden;
         let strip_w = LINE_W + 2.0 * LINE_HIT_PAD;
         let wpx = if strip { wpx.max((strip_w * s).ceil() as i32 + 2) } else { wpx };
         let hpx = (h * s).ceil() as i32 + 1;
-        let left = self.mon_cx - wpx / 2;
-        let top = self.mon_top;
-        self.screen_cx = (wpx / 2) as f32 / s;
+        let left = self.s.mon_cx - wpx / 2;
+        let top = self.s.mon_top;
+        self.s.screen_cx = (wpx / 2) as f32 / s;
         if !self.gfx.begin(wpx, hpx) {
             return;
         }
@@ -1477,35 +1569,35 @@ impl App {
         let wi = ((w * s).round() as i32).clamp(1, wpx);
         let xi = (wpx - wi) / 2;
         let island = R::new(xi as f32 / s, 0.0, wi as f32 / s, h);
-        let mut ui = Ui { hits: Vec::with_capacity(32), mouse: self.mouse };
+        let mut ui = Ui { hits: Vec::with_capacity(32), mouse: self.s.mouse };
         if strip {
             // alpha 1/255: invisible, but the window still receives the mouse there
             let sh = (LINE_H + 1.0).min(hpx as f32 / s);
             let sx = (wpx as f32 / s - strip_w) / 2.0;
             self.gfx.rect(R::new(sx, 0.0, strip_w, sh), C(0.0, 0.0, 0.0, 1.0 / 255.0));
         }
-        self.marquee_on.set(false);
+        self.s.marquee_on.set(false);
         self.draw(&self.gfx, &mut ui, island);
-        if !self.marquee_on.get() {
+        if !self.s.marquee_on.get() {
             // nothing long under the mouse any more: the next one starts from its beginning
-            self.marquee_at.set(None);
+            self.s.marquee_at.set(None);
         }
-        self.gfx.end(self.hwnd, left, top, wpx, hpx);
-        self.win = (left, top, wpx, hpx);
-        self.isl_px = (
+        self.gfx.end(self.s.hwnd, left, top, wpx, hpx);
+        self.s.win = (left, top, wpx, hpx);
+        self.s.isl_px = (
             left + (island.x * s) as i32,
             top,
             (island.w * s).ceil() as i32 + 1,
             hpx,
         );
-        self.hits = ui.hits;
+        self.s.hits = ui.hits;
     }
 
     fn draw(&self, g: &Gfx, ui: &mut Ui, isl: R) {
         if isl.h < 0.5 {
             return;
         }
-        let rad = self.sr.x.clamp(0.0, isl.h / 2.0);
+        let rad = self.s.sr.x.clamp(0.0, isl.h / 2.0);
         // Attached to the top edge like a notch: extend the shape upward by its radius so
         // only the bottom corners are rounded, then add the concave shoulders.
         let shape = R::new(isl.x, isl.y - rad, isl.w, isl.h + rad);
@@ -1517,20 +1609,20 @@ impl App {
         // Line mode: the pill comes down out of (and goes back up into) the 5 px line, its content
         // sliding with the shape's lower edge and clipped by it, as if it was above the screen.
         let sliding = self.data.settings.line_mode
-            && match self.view {
-                ViewKey::Line => self.line_from_pill,
-                ViewKey::Compact(_) => self.pill_from_line,
+            && match self.s.view {
+                ViewKey::Line => self.s.line_from_pill,
+                ViewKey::Compact(_) => self.s.pill_from_line,
                 _ => false,
             };
         // Whole pixels, and already home while the shape creeps its last pixel: the text must not
         // change its blur on the way or hop into place when the spring finally snaps to rest.
         let px = |v: f32| (v * self.gfx.scale).round() / self.gfx.scale;
         let drop_y = if sliding {
-            px(-PILL_H * (1.0 - ((self.sh.x - LINE_H) / (PILL_H - 1.0 - LINE_H)).clamp(0.0, 1.0)))
+            px(-PILL_H * (1.0 - ((self.s.sh.x - LINE_H) / (PILL_H - 1.0 - LINE_H)).clamp(0.0, 1.0)))
         } else {
             0.0
         };
-        let mut alpha = if self.view == ViewKey::Line {
+        let mut alpha = if self.s.view == ViewKey::Line {
             // nothing of the pill left to show at the line; the open island or a notice closing
             // straight to the line must not flash the pill's content on the way
             if sliding && drop_y > -PILL_H + 0.01 {
@@ -1540,10 +1632,10 @@ impl App {
             }
         } else if sliding {
             1.0
-        } else if self.data.settings.line_mode && matches!(self.view, ViewKey::Compact(_)) {
-            smooth(self.view_age / 0.2)
+        } else if self.data.settings.line_mode && matches!(self.s.view, ViewKey::Compact(_)) {
+            smooth(self.s.view_age / 0.2)
         } else {
-            smooth((self.view_age - 0.05) / 0.22)
+            smooth((self.s.view_age - 0.05) / 0.22)
         };
         if let Some((_, since, _)) = self.leaving {
             // content goes first, then the black shape follows it into the edge
@@ -1556,37 +1648,37 @@ impl App {
         // view: when the hover ends mid-frame it already says "line" while `view` is still the
         // pill, and the pill's content would be squeezed into a 5 px box for one frame (text
         // jumping up and cut off just before the island closes).
-        let (tw, th) = self.view_wh.unwrap_or_else(|| {
+        let (tw, th) = self.s.view_wh.unwrap_or_else(|| {
             let (w, h, _, _) = self.target();
             (w, h)
         });
-        let c = match self.view {
+        let c = match self.s.view {
             ViewKey::Line => {
                 // still rising from the pill: lay its content out at the pill's size
                 let (live, sec) = self.lives();
                 let cw = self.compact_width(live) + self.segment_width(sec);
-                R::new(px(self.screen_cx - cw / 2.0), isl.y + drop_y, cw, PILL_H)
+                R::new(px(self.s.screen_cx - cw / 2.0), isl.y + drop_y, cw, PILL_H)
             }
             // the shape's width (hover) moves its center by a pixel now and then: not the content
-            ViewKey::Compact(_) if self.data.settings.line_mode => R::new(px(self.screen_cx - tw / 2.0), isl.y + drop_y, tw, th),
+            ViewKey::Compact(_) if self.data.settings.line_mode => R::new(px(self.s.screen_cx - tw / 2.0), isl.y + drop_y, tw, th),
             _ => R::new(isl.cx() - tw / 2.0, isl.y, tw, th),
         };
         // Open and at rest, the content sits inside the shape clear of its rounded corners, so a
         // plain rectangle clip will do: no island-sized layer bitmap (about 2 MB with lyrics).
         // While anything moves or fades, clip to the real shape.
-        let at_rest = matches!(self.view, ViewKey::Expanded(..))
+        let at_rest = matches!(self.s.view, ViewKey::Expanded(..))
             && alpha >= 0.999
-            && self.slide.is_none()
+            && self.s.slide.is_none()
             && self.leaving.is_none()
-            && self.sw.done()
-            && self.sh.done()
-            && self.sr.done();
+            && self.s.sw.done()
+            && self.s.sh.done()
+            && self.s.sr.done();
         if at_rest {
             g.push_rr(shape, 0.0, 1.0);
         } else {
             g.push_rr(shape, rad, alpha);
         }
-        match self.view {
+        match self.s.view {
             ViewKey::Compact(live) => self.draw_compact(g, ui, c, live),
             ViewKey::Line => self.draw_compact(g, ui, c, self.lives().0),
             ViewKey::Toast(_) => {
@@ -1811,7 +1903,7 @@ impl App {
             let r = self.draw_cat(g, (tabs_end + x - cs) / 2.0, inner.y + 28.0);
             ui.hit(r, Act::Pet);
         }
-        match &self.slide {
+        match &self.s.slide {
             None => self.draw_body(g, ui, c, tab, lyr),
             Some(sl) => {
                 // Slide between features: the old page leaves to one side while the new one
@@ -2162,8 +2254,8 @@ impl App {
         self.edit = Some(Edit { field: f, buf, fresh: true });
         self.input_focus = false;
         unsafe {
-            let _ = SetForegroundWindow(self.hwnd);
-            let _ = SetFocus(self.hwnd);
+            let _ = SetForegroundWindow(self.home);
+            let _ = SetFocus(self.home);
         }
     }
 
@@ -2300,14 +2392,14 @@ impl App {
             return 0.0;
         }
         let now = Instant::now();
-        let start = match self.marquee_at.get() {
+        let start = match self.s.marquee_at.get() {
             Some((k, t)) if k == key => t,
             _ => {
-                self.marquee_at.set(Some((key, now)));
+                self.s.marquee_at.set(Some((key, now)));
                 now
             }
         };
-        self.marquee_on.set(true);
+        self.s.marquee_on.set(true);
         // a short wait first (just passing by doesn't start it), ~45 px a second, a pause at the end
         const WAIT: f32 = 0.6;
         const HOLD: f32 = 1.4;
@@ -2570,12 +2662,16 @@ impl App {
     // -------------------------------------------------------------- actions
 
     fn cursor_inside(&self) -> bool {
-        let mut p = POINT::default();
-        unsafe {
-            let _ = GetCursorPos(&mut p);
-        }
-        let (l, t, w, h) = self.isl_px;
-        p.x >= l && p.x < l + w && p.y >= t && p.y < t + h
+        cursor_in(self.s.isl_px)
+    }
+
+    /// The cursor is over the island the panel is on.
+    fn home_inside(&self) -> bool {
+        self.surfaces().find(|o| o.hwnd == self.home).map(|o| cursor_in(o.isl_px)).unwrap_or(false)
+    }
+
+    fn any_inside(&self) -> bool {
+        self.surfaces().any(|o| cursor_in(o.isl_px))
     }
 
     /// Whether the cursor is really over this window (not over its see-through pixels).
@@ -2583,12 +2679,12 @@ impl App {
         let mut p = POINT::default();
         unsafe {
             let _ = GetCursorPos(&mut p);
-            WindowFromPoint(p) == self.hwnd
+            WindowFromPoint(p) == self.s.hwnd
         }
     }
 
     fn hit_at(&self, p: (f32, f32)) -> Option<Act> {
-        self.hits.iter().rev().find(|(r, _)| r.contains(p)).map(|(_, a)| *a)
+        self.s.hits.iter().rev().find(|(r, _)| r.contains(p)).map(|(_, a)| *a)
     }
 
     fn act(&mut self, a: Act, mx: f32) {
@@ -2711,8 +2807,8 @@ impl App {
             Act::TaskField => {
                 self.input_focus = true;
                 unsafe {
-                    let _ = SetForegroundWindow(self.hwnd);
-                    let _ = SetFocus(self.hwnd);
+                    let _ = SetForegroundWindow(self.home);
+                    let _ = SetFocus(self.home);
                 }
             }
             Act::TaskTime(d) => self.adjust_due(d),
@@ -2873,7 +2969,7 @@ impl App {
         }
 
         if let Some(t) = &self.toast {
-            if n >= t.until && !self.cursor_inside() {
+            if n >= t.until && !self.any_inside() {
                 self.toast = None;
                 redraw = true;
             }
@@ -2882,14 +2978,15 @@ impl App {
         let small = !self.expanded && self.toast.is_none() && self.leaving.is_none();
         if !small {
             self.trim_at = None;
-        } else if self.trim_at.is_none() && self.gfx.oversized(self.win.2, self.win.3) {
+        } else if self.trim_at.is_none() && { let (w, h) = self.biggest_win(); self.gfx.oversized(w, h) } {
             self.trim_at = Some(n + Duration::from_secs(3));
         }
         if let Some(at) = self.trim_at {
             if small && !self.anim_on && n >= at {
                 self.trim_at = None;
-                if self.win.2 > 0 && self.win.3 > 0 {
-                    self.gfx.trim(self.win.2, self.win.3);
+                let (w, h) = self.biggest_win();
+                if w > 0 && h > 0 {
+                    self.gfx.trim(w, h);
                 }
                 // previews come back (decoded again) the next time the Shelf opens
                 self.thumbs.clear();
@@ -2976,43 +3073,16 @@ impl App {
             }
         }
 
-        // a resize under a still cursor can produce a spurious WM_MOUSELEAVE: recover hover
-        // (not while it is a line: it opens only on a real mouse movement over the line, and
-        // the island rectangle may still be the size of the panel that just closed)
-        let settling = self.no_hover_until.map(|t| n < t).unwrap_or(false);
-        if self.mouse.is_none()
-            && !self.hidden
-            && self.view != ViewKey::Line
-            && !settling
-            && self.cursor_inside()
-            && self.cursor_on_window()
-        {
-            let mut p = POINT::default();
-            unsafe {
-                let _ = GetCursorPos(&mut p);
-            }
-            let s = self.gfx.scale;
-            self.mouse = Some(((p.x - self.win.0) as f32 / s, (p.y - self.win.1) as f32 / s));
-            self.tracking = false;
-            self.track_leave();
-            redraw = true;
-        }
-
-        // the other way round: a WM_MOUSELEAVE can get lost (a full-screen game taking the
-        // mouse, for one), and then nothing would ever end the hover
-        if self.mouse.is_some() && !self.demo && !self.hidden && !self.cursor_on_window() {
-            let held = unsafe { GetCapture() } == self.hwnd;
-            if !held {
-                dbg_log("hover: lost WM_MOUSELEAVE, ending it");
-                self.on_mouse_leave();
-            }
-        }
+        // each island: hover lost or found behind the mouse's back
+        let mut found = false;
+        self.each(|a| found |= a.check_hover(n));
+        redraw |= found;
 
         // auto-collapse when the island is open but the user went elsewhere
         if self.expanded && !self.demo && !self.menu_hold {
             self.arm_auto_close(n);
             if let Some(at) = self.collapse_at {
-                if n >= at && !self.cursor_inside() && !self.drag_hover {
+                if n >= at && !self.home_inside() && !self.drag_hover {
                     self.collapse();
                 }
             }
@@ -3023,7 +3093,11 @@ impl App {
         // redraw when the closed island should switch activity (e.g. a task became due soon)
         // or, for the idle clock, when the minute rolls over
         let minute = now().secs / 60;
-        if minute != self.last_min || (compact && self.target().3 != self.view) {
+        let mut moved_on = false;
+        if compact {
+            self.each(|a| moved_on |= a.target().3 != a.s.view);
+        }
+        if minute != self.last_min || moved_on {
             self.last_min = minute;
             redraw = true;
         }
@@ -3050,7 +3124,7 @@ impl App {
             ms = ms.min(self.pet.frame_period().as_millis() as u32).max(60);
         }
         self.set_tick(ms);
-        if (periodic || redraw) && !self.hidden {
+        if (periodic || redraw) && !self.all_hidden() {
             self.kick();
         }
     }
@@ -3066,7 +3140,7 @@ impl App {
 
         // task reminders: 1 day, 6 h, 3 h, 1 h and 30 min before, and when due. Not while
         // hidden (full-screen game, video or presentation): they come once it is back.
-        if !self.hidden {
+        if !self.all_hidden() {
             self.task_reminders(t.secs);
         }
 
@@ -3214,6 +3288,10 @@ impl App {
                     self.toast(TIcon::Txt("⇪".into()), title, "", 1.4, if self.caps { GREEN } else { WHITE }, None);
                 }
                 Event::DragEnter(text) => {
+                    if !self.drag_hover {
+                        // the drag is over one display's island: the panel opens there
+                        self.home = self.island_at_cursor();
+                    }
                     self.drag_hover = true;
                     self.drag_text = text;
                     self.collapse_at = None;
@@ -3228,7 +3306,7 @@ impl App {
                 }
                 Event::MouseDown => {
                     // opened by a drag, so not the active window: a click elsewhere closes it
-                    if self.expanded && self.drag_expanded && !self.drag_hover && !self.cursor_inside() {
+                    if self.expanded && self.drag_expanded && !self.drag_hover && !self.home_inside() {
                         self.collapse();
                     }
                 }
@@ -3316,13 +3394,8 @@ impl App {
     }
 
     pub fn on_display_change(&mut self) {
-        let (cx, top, s) = monitor();
-        self.mon_cx = cx;
-        self.mon_top = top;
         crate::vsync::display_changed();
-        if (s - self.gfx.scale).abs() > 0.001 {
-            self.gfx.set_scale(s);
-        }
+        self.sync_displays();
         self.kick();
     }
 
@@ -3336,12 +3409,12 @@ impl App {
 
     /// Ask Windows for a WM_MOUSELEAVE, once per stay of the cursor on the window.
     fn track_leave(&mut self) {
-        if !self.tracking {
-            self.tracking = true;
+        if !self.s.tracking {
+            self.s.tracking = true;
             let mut tme = TRACKMOUSEEVENT {
                 cbSize: std::mem::size_of::<TRACKMOUSEEVENT>() as u32,
                 dwFlags: TME_LEAVE,
-                hwndTrack: self.hwnd,
+                hwndTrack: self.s.hwnd,
                 dwHoverTime: 0,
             };
             unsafe {
@@ -3352,16 +3425,16 @@ impl App {
 
     pub fn on_mouse_move(&mut self, lp: LPARAM) {
         let p = self.local(lp);
-        if self.mouse.is_none() {
-            self.hover_in = Some(Instant::now());
+        if self.s.mouse.is_none() {
+            self.s.hover_in = Some(Instant::now());
         }
         self.track_leave();
-        self.mouse = Some(p);
+        self.s.mouse = Some(p);
         if self.expanded {
             self.panel_entered = true;
         }
         self.stroke_cat(p);
-        if let Some((Some(a), sx, sy)) = self.press {
+        if let Some((Some(a), sx, sy)) = self.s.press {
             if (p.0 - sx).abs() + (p.1 - sy).abs() > 6.0 {
                 let paths: Vec<String> = match a {
                     // dragging a selected tile (or the button) carries the selection, in shelf order
@@ -3372,7 +3445,7 @@ impl App {
                     _ => Vec::new(),
                 };
                 if matches!(a, Act::ShelfItem(_) | Act::ShelfAll) {
-                    self.press = None;
+                    self.s.press = None;
                     unsafe {
                         let _ = ReleaseCapture();
                     }
@@ -3388,13 +3461,13 @@ impl App {
 
     /// Decides whether (and when) the open panel should close by itself.
     fn arm_auto_close(&mut self, n: Instant) {
-        if self.cursor_inside() {
+        if self.home_inside() {
             self.panel_entered = true;
             self.collapse_at = None;
             return;
         }
         // typing, or holding the mouse button (dragging the seek bar): stay until that is over
-        let busy = self.input_focus || self.edit.is_some() || self.press.is_some();
+        let busy = self.input_focus || self.edit.is_some() || self.s.press.is_some();
         let fg = unsafe { GetForegroundWindow() };
         if self.collapse_at.is_none() {
             if self.drag_expanded {
@@ -3404,22 +3477,22 @@ impl App {
                 self.collapse_at = Some(n + Duration::from_millis(wait));
             } else if self.panel_entered && !busy {
                 self.collapse_at = Some(n + PANEL_OUT);
-            } else if fg != self.hwnd {
+            } else if fg != self.home {
                 self.collapse_at = Some(n + Duration::from_millis(1200));
             }
-        } else if busy && fg == self.hwnd && !self.drag_expanded {
+        } else if busy && fg == self.home && !self.drag_expanded {
             self.collapse_at = None;
         }
     }
 
     pub fn on_mouse_leave(&mut self) {
-        self.tracking = false;
+        self.s.tracking = false;
         if self.menu_hold {
             // the island's own menu took the mouse: settled when the menu closes (menu_closed)
             return;
         }
-        self.mouse = None;
-        self.hover_out = Some(Instant::now());
+        self.s.mouse = None;
+        self.s.hover_out = Some(Instant::now());
         if self.expanded && !self.demo {
             self.arm_auto_close(Instant::now());
             if self.collapse_at.is_some() {
@@ -3435,10 +3508,10 @@ impl App {
     /// sliding off before releasing cancels. Shelf tiles can be dragged out while held.
     pub fn on_ldown(&mut self, lp: LPARAM) {
         let p = self.local(lp);
-        self.mouse = Some(p);
-        self.press = Some((self.hit_at(p), p.0, p.1));
+        self.s.mouse = Some(p);
+        self.s.press = Some((self.hit_at(p), p.0, p.1));
         unsafe {
-            SetCapture(self.hwnd);
+            SetCapture(self.s.hwnd);
         }
     }
 
@@ -3447,12 +3520,13 @@ impl App {
         unsafe {
             let _ = ReleaseCapture();
         }
-        let Some((hit, _, _)) = self.press.take() else { return };
+        let Some((hit, _, _)) = self.s.press.take() else { return };
         // released somewhere else than where it was pressed: cancel
         if !self.cursor_inside() || self.hit_at(p) != hit {
             return;
         }
-        if !self.expanded {
+        // the closed island (also one on another display while the panel is open elsewhere)
+        if !self.expanded || self.s.hwnd != self.home {
             match hit {
                 Some(Act::VolBar(r)) => self.act(Act::VolBar(r), p.0),
                 Some(Act::Tab(t)) => self.expand(Some(t)),
@@ -3479,23 +3553,29 @@ impl App {
 
     pub fn on_rup(&mut self) {
         self.menu_hold = true;
+        self.menu_on = self.s.hwnd;
         self.deferred = Some(Deferred::Menu);
     }
 
     /// The menu is gone: back to what the mouse is really doing.
     pub fn menu_closed(&mut self) {
+        let h = self.menu_on;
+        self.on(h, |a| a.menu_closed_here());
+    }
+
+    fn menu_closed_here(&mut self) {
         if !self.menu_hold {
             return;
         }
         self.menu_hold = false;
-        self.tracking = false;
+        self.s.tracking = false;
         if self.cursor_inside() && self.cursor_on_window() {
             let mut p = POINT::default();
             unsafe {
                 let _ = GetCursorPos(&mut p);
             }
             let s = self.gfx.scale;
-            self.mouse = Some(((p.x - self.win.0) as f32 / s, (p.y - self.win.1) as f32 / s));
+            self.s.mouse = Some(((p.x - self.s.win.0) as f32 / s, (p.y - self.s.win.1) as f32 / s));
             self.track_leave();
             self.kick();
         } else {
@@ -3508,7 +3588,7 @@ impl App {
         let steps = delta.signum();
         let mut pt = POINT { x: (lp.0 & 0xFFFF) as i16 as i32, y: ((lp.0 >> 16) & 0xFFFF) as i16 as i32 };
         unsafe {
-            let _ = ScreenToClient(self.hwnd, &mut pt);
+            let _ = ScreenToClient(self.s.hwnd, &mut pt);
         }
         let p = (pt.x as f32 / self.gfx.scale, pt.y as f32 / self.gfx.scale);
         let hit = self.hit_at(p);
@@ -3560,7 +3640,8 @@ impl App {
     }
 
     pub fn on_activate(&mut self, active: bool) {
-        if !active {
+        // only the window the panel is on counts (another island taking focus moves the panel)
+        if !active && self.s.hwnd == self.home {
             self.input_focus = false;
             if self.expanded && !self.drag_expanded && !self.demo && !self.menu_hold && !self.cursor_inside() {
                 dbg_log("collapse: deactivate");
@@ -3656,9 +3737,6 @@ impl App {
         self.gfx.set_theme(&th);
         dbg_log("theme reloaded");
         self.kick();
-        if !self.hidden {
-            self.render();
-        }
     }
 
     pub fn menu_state(&self) -> tray::MenuState {
@@ -3762,7 +3840,7 @@ impl App {
     /// "Update available" once per version, and not while hidden (full screen) or open.
     fn offer_update(&mut self) {
         let Some(r) = &self.upd_avail else { return };
-        if self.upd_busy || self.hidden || self.expanded || self.upd_shown.as_deref() == Some(r.version.as_str()) {
+        if self.upd_busy || self.all_hidden() || self.expanded || self.upd_shown.as_deref() == Some(r.version.as_str()) {
             return;
         }
         // don't push away another notice; per_second tries again
@@ -3824,7 +3902,7 @@ impl App {
                 self.clip_scroll = 0;
                 // count only: copied text must never reach the log file
                 dbg_log(&format!("clipboard: {} entries", self.clips.len()));
-                if self.expanded && self.tab == Tab::Clipboard && !self.hidden {
+                if self.expanded && self.tab == Tab::Clipboard && !self.all_hidden() {
                     self.render();
                 }
             }
@@ -3861,7 +3939,7 @@ impl App {
 
     /// The cat is on screen (anything but the bare line, or hidden).
     fn cat_visible(&self) -> bool {
-        !self.hidden && self.view != ViewKey::Line
+        self.surfaces().any(|o| !o.hidden && o.view != ViewKey::Line)
     }
 
     fn hearts_on(&self) -> bool {
@@ -3960,7 +4038,7 @@ impl App {
 
     /// Draws the cat (current frame, hearts if happy) filling `r`; returns `r`.
     fn draw_cat_in(&self, g: &Gfx, r: R) -> R {
-        self.cat_rect.set(Some(r));
+        self.s.cat_rect.set(Some(r));
         let (mood, i) = self.cat_frame;
         self.draw_cat_frame(g, mood, i, r, 1.0);
         if let Some(t) = self.hearts_at {
@@ -4065,7 +4143,7 @@ impl App {
     fn need_notice(&mut self) {
         let Some(need) = self.data.pet.lowest() else { return };
         let t = unix_now();
-        if self.hidden || self.demo || (self.expanded && self.tab == Tab::Pet) || t - self.data.pet.noticed < NEED_NOTICE_EVERY {
+        if self.all_hidden() || self.demo || (self.expanded && self.tab == Tab::Pet) || t - self.data.pet.noticed < NEED_NOTICE_EVERY {
             return;
         }
         self.data.pet.noticed = t;
@@ -4166,22 +4244,22 @@ impl App {
     /// Moving the mouse back and forth over the cat in the closed island strokes it.
     fn stroke_cat(&mut self, p: (f32, f32)) {
         let on_cat = !self.expanded
-            && matches!(self.view, ViewKey::Compact(_))
-            && self.cat_rect.get().map(|r| r.contains(p)).unwrap_or(false);
+            && matches!(self.s.view, ViewKey::Compact(_))
+            && self.s.cat_rect.get().map(|r| r.contains(p)).unwrap_or(false);
         if !on_cat {
-            self.stroke = None;
+            self.s.stroke = None;
             return;
         }
         let n = Instant::now();
-        let (dist, last_x, since) = match self.stroke {
+        let (dist, last_x, since) = match self.s.stroke {
             Some((d, lx, t)) if n.duration_since(t) < STROKE_WINDOW => (d + (p.0 - lx).abs(), p.0, t),
             _ => (0.0, p.0, n),
         };
         if dist >= STROKE_WIDTHS * self.cat_size() {
-            self.stroke = None;
+            self.s.stroke = None;
             self.pet_cat();
         } else {
-            self.stroke = Some((dist, last_x, since));
+            self.s.stroke = Some((dist, last_x, since));
         }
     }
 
@@ -4221,20 +4299,30 @@ impl App {
         if self.leaving.is_some() {
             return;
         }
-        let want = self.user_hidden || system::fullscreen_busy(self.hidden);
-        if want != self.hidden {
-            dbg_log(&format!("visibility: hidden={want} (by user: {})", self.user_hidden));
-            self.hidden = want;
+        self.each(|a| a.apply_visibility_here());
+        // the panel's display went full screen: close it
+        if self.expanded && self.surfaces().any(|o| o.hwnd == self.home && o.hidden) {
+            self.collapse();
+        }
+    }
+
+    /// Hide this island while the user hid PatPet or a full-screen app is in front on its
+    /// display; bring it back afterwards.
+    fn apply_visibility_here(&mut self) {
+        let want = self.user_hidden || system::fullscreen_busy(self.s.hidden, self.s.display.handle);
+        if want != self.s.hidden {
+            dbg_log(&format!("visibility: {:?} hidden={want} (by user: {})", self.s.hwnd.0, self.user_hidden));
+            self.s.hidden = want;
             // a hidden window hears nothing more from the mouse, so what it knew is out of date
             self.forget_pointer();
             unsafe {
                 if want {
-                    let _ = ShowWindow(self.hwnd, SW_HIDE);
+                    let _ = ShowWindow(self.s.hwnd, SW_HIDE);
                 } else {
                     // to the very top: a game that made itself topmost went above the island
                     // while it was hidden, and may still be open
                     let _ = SetWindowPos(
-                        self.hwnd,
+                        self.s.hwnd,
                         HWND_TOPMOST,
                         0,
                         0,
@@ -4248,10 +4336,10 @@ impl App {
                 if self.data.settings.line_mode {
                     // back as the line it was, not a pill left over from before or while hidden;
                     // the window appearing under a resting cursor is not a hover yet
-                    self.no_hover_until = Some(Instant::now() + Duration::from_millis(350));
+                    self.s.no_hover_until = Some(Instant::now() + Duration::from_millis(350));
                     if self.target().3 == ViewKey::Line {
-                        self.view = ViewKey::Line;
-                        self.line_from_pill = false;
+                        self.s.view = ViewKey::Line;
+                        self.s.line_from_pill = false;
                     }
                 }
                 self.pop_in();
@@ -4261,20 +4349,20 @@ impl App {
 
     /// Drop everything known about the mouse, as if it had left long ago.
     fn forget_pointer(&mut self) {
-        if self.press.take().is_some() {
+        if self.s.press.take().is_some() {
             unsafe {
                 let _ = ReleaseCapture();
             }
         }
-        self.mouse = None;
-        self.tracking = false;
+        self.s.mouse = None;
+        self.s.tracking = false;
         self.drag_hover = false;
-        self.hover_on = false;
-        self.hover_in = None;
-        self.hover_out = None;
-        self.hov = 0.0;
-        self.hov_v = 0.0;
-        self.isl_px = (0, 0, 0, 0);
+        self.s.hover_on = false;
+        self.s.hover_in = None;
+        self.s.hover_out = None;
+        self.s.hov = 0.0;
+        self.s.hov_v = 0.0;
+        self.s.isl_px = (0, 0, 0, 0);
     }
 
     /// Tray click or a second launch: unhide and open the island.
@@ -4287,10 +4375,166 @@ impl App {
         }
         self.user_hidden = false;
         self.apply_visibility();
-        if !self.hidden {
-            self.expand(None);
+        // on the display the mouse is on
+        let h = self.island_at_cursor();
+        self.on(h, |a| {
+            if !a.s.hidden {
+                a.expand(None);
+            }
+        });
+    }
+
+    // -------------------------------------------------------------- displays
+
+    /// The island being worked on, then the others.
+    fn surfaces(&self) -> impl Iterator<Item = &Surface> {
+        std::iter::once(&self.s).chain(self.others.iter())
+    }
+
+    /// Run `f` for every island in turn (each one as `self.s`, with its display's scale).
+    fn each(&mut self, mut f: impl FnMut(&mut App)) {
+        self.gfx.set_scale(self.s.display.scale);
+        f(self);
+        for i in 0..self.others.len() {
+            std::mem::swap(&mut self.s, &mut self.others[i]);
+            self.gfx.set_scale(self.s.display.scale);
+            f(self);
+            std::mem::swap(&mut self.s, &mut self.others[i]);
+        }
+        self.gfx.set_scale(self.s.display.scale);
+    }
+
+    /// Run `f` for the island in window `hwnd` (as `self.s`); None when it is not one of them.
+    pub fn on<T>(&mut self, hwnd: HWND, f: impl FnOnce(&mut App) -> T) -> Option<T> {
+        if self.s.hwnd == hwnd {
+            return Some(f(self));
+        }
+        let i = self.others.iter().position(|o| o.hwnd == hwnd)?;
+        std::mem::swap(&mut self.s, &mut self.others[i]);
+        self.gfx.set_scale(self.s.display.scale);
+        let r = f(self);
+        std::mem::swap(&mut self.s, &mut self.others[i]);
+        self.gfx.set_scale(self.s.display.scale);
+        Some(r)
+    }
+
+    fn all_hidden(&self) -> bool {
+        self.surfaces().all(|o| o.hidden)
+    }
+
+    /// Something is being dragged over this island (the one the panel opens on).
+    fn drag_here(&self) -> bool {
+        self.drag_hover && self.s.hwnd == self.home
+    }
+
+    /// The window of the island on the display the mouse is on (the primary one otherwise).
+    fn island_at_cursor(&self) -> HWND {
+        let mut p = POINT::default();
+        unsafe {
+            let _ = GetCursorPos(&mut p);
+            let hm = MonitorFromPoint(p, MONITOR_DEFAULTTOPRIMARY);
+            self.surfaces().find(|o| o.display.handle == hm && !o.hidden).map(|o| o.hwnd).unwrap_or(self.hwnd)
         }
     }
+
+    /// The largest window any island has (the shared frame buffer only shrinks to this).
+    fn biggest_win(&self) -> (i32, i32) {
+        self.surfaces().fold((0, 0), |(w, h), o| (w.max(o.win.2), h.max(o.win.3)))
+    }
+
+    /// A hover that a resize or a lost WM_MOUSELEAVE left behind on this island, put right.
+    /// Returns true when the cursor turned out to be resting on it.
+    fn check_hover(&mut self, n: Instant) -> bool {
+        // a resize under a still cursor can produce a spurious WM_MOUSELEAVE: recover hover
+        // (not while it is a line: it opens only on a real mouse movement over the line, and
+        // the island rectangle may still be the size of the panel that just closed)
+        let settling = self.s.no_hover_until.map(|t| n < t).unwrap_or(false);
+        if self.s.mouse.is_none()
+            && !self.s.hidden
+            && self.s.view != ViewKey::Line
+            && !settling
+            && self.cursor_inside()
+            && self.cursor_on_window()
+        {
+            let mut p = POINT::default();
+            unsafe {
+                let _ = GetCursorPos(&mut p);
+            }
+            let s = self.gfx.scale;
+            self.s.mouse = Some(((p.x - self.s.win.0) as f32 / s, (p.y - self.s.win.1) as f32 / s));
+            self.s.tracking = false;
+            self.track_leave();
+            return true;
+        }
+        // the other way round: a WM_MOUSELEAVE can get lost (a full-screen game taking the
+        // mouse, for one), and then nothing would ever end the hover
+        if self.s.mouse.is_some() && !self.demo && !self.s.hidden && !self.cursor_on_window() {
+            let held = unsafe { GetCapture() } == self.s.hwnd;
+            if !held {
+                dbg_log("hover: lost WM_MOUSELEAVE, ending it");
+                self.on_mouse_leave();
+            }
+        }
+        false
+    }
+
+    /// One island per display: windows for new displays, none for unplugged ones, and every
+    /// island moved to where its display is now.
+    fn sync_displays(&mut self) {
+        let list = displays();
+        let Some(primary) = list.first().copied() else { return };
+        dbg_log(&format!(
+            "displays: {}",
+            list.iter().map(|d| format!("[{:?} x{} top-centre {},{}]", d.handle.0, d.scale, d.cx, d.top)).collect::<Vec<_>>().join(" ")
+        ));
+        // the main window stays on the primary display
+        self.s.display = primary;
+        self.s.mon_cx = primary.cx;
+        self.s.mon_top = primary.top;
+        let rest = &list[1..];
+        // islands of displays that are gone
+        let gone: Vec<HWND> = self.others.iter().filter(|o| !rest.iter().any(|d| d.handle == o.display.handle)).map(|o| o.hwnd).collect();
+        for h in gone {
+            dbg_log("displays: an island goes");
+            if h == self.home {
+                self.home = self.hwnd;
+                if self.expanded {
+                    self.collapse();
+                }
+            }
+            self.others.retain(|o| o.hwnd != h);
+            shelf::unregister(h);
+            unsafe {
+                let _ = DestroyWindow(h);
+            }
+        }
+        for d in rest {
+            if let Some(o) = self.others.iter_mut().find(|o| o.display.handle == d.handle) {
+                o.display = *d;
+                o.mon_cx = d.cx;
+                o.mon_top = d.top;
+                continue;
+            }
+            let Some(h) = crate::island_window() else { continue };
+            dbg_log("displays: a new island");
+            shelf::register(h);
+            let mut o = Surface::new(h, *d);
+            // shown (or kept hidden) by apply_visibility below, which pops it in
+            o.hidden = true;
+            self.others.push(o);
+        }
+        self.gfx.set_scale(self.s.display.scale);
+        self.apply_visibility();
+        self.kick();
+    }
+}
+
+fn cursor_in((l, t, w, h): (i32, i32, i32, i32)) -> bool {
+    let mut p = POINT::default();
+    unsafe {
+        let _ = GetCursorPos(&mut p);
+    }
+    p.x >= l && p.x < l + w && p.y >= t && p.y < t + h
 }
 
 // ------------------------------------------------------------------ widgets
