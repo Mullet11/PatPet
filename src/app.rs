@@ -2815,15 +2815,16 @@ impl App {
             Act::Edit(f) => self.start_edit(f),
             Act::TaskAdd => self.add_task(),
             Act::TaskToggle(id) => {
-                let mut done = false;
+                let mut done = (false, false);
                 if let Some(t) = self.data.tasks.iter_mut().find(|t| t.id == id) {
-                    t.done = !t.done;
-                    done = t.done;
+                    done = t.toggle();
                     self.dirty = true;
                 }
-                if done {
+                if done.0 {
                     self.cheer();
-                    let ups = self.data.pet.gain(care::XP_TASK);
+                }
+                if done.1 {
+                    let ups = self.data.pet.task_done(now().day());
                     self.on_levels(ups);
                 }
             }
@@ -2931,6 +2932,7 @@ impl App {
             done: false,
             notified: false,
             alerts: passed_alerts(due, n.secs),
+            rewarded: false,
         });
         self.input.clear();
         // on a later day the time stays, for adding more tasks to that day

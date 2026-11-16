@@ -42,6 +42,8 @@ pub const XP_PLAY: u32 = 8;
 pub const XP_BATH: u32 = 5;
 pub const XP_PET: u32 = 1;
 pub const XP_TASK: u32 = 10;
+/// Ticked-off tasks earn experience this many times a day at most.
+pub const TASKS_PER_DAY: u32 = 5;
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 #[serde(default)]
@@ -61,11 +63,15 @@ pub struct Care {
     pub updated: i64,
     /// when the last "your cat needs..." notice was shown (Unix seconds)
     pub noticed: i64,
+    /// the day (days since 1970) `tasks_today` counts for, and how many tasks earned
+    /// experience on it
+    pub task_day: i64,
+    pub tasks_today: u32,
 }
 
 impl Default for Care {
     fn default() -> Self {
-        Care { food: 80.0, fun: 80.0, energy: 80.0, clean: 80.0, level: 1, xp: 0, room: 0, nap: false, updated: 0, noticed: 0 }
+        Care { food: 80.0, fun: 80.0, energy: 80.0, clean: 80.0, level: 1, xp: 0, room: 0, nap: false, updated: 0, noticed: 0, task_day: 0, tasks_today: 0 }
     }
 }
 
@@ -173,6 +179,20 @@ impl Care {
     /// Put the cat to bed, or wake it up.
     pub fn toggle_nap(&mut self) {
         self.nap = !self.nap;
+    }
+
+    /// A task ticked off on `day`: experience, up to TASKS_PER_DAY tasks a day; returns
+    /// levels gained.
+    pub fn task_done(&mut self, day: i64) -> u32 {
+        if self.task_day != day {
+            self.task_day = day;
+            self.tasks_today = 0;
+        }
+        if self.tasks_today >= TASKS_PER_DAY {
+            return 0;
+        }
+        self.tasks_today += 1;
+        self.gain(XP_TASK)
     }
 
     /// Add experience; returns how many levels that made.
@@ -301,6 +321,19 @@ mod tests {
         assert_eq!(rooms_open(1), 1);
         assert_eq!(rooms_open(4), 2);
         assert_eq!(rooms_open(16), ROOMS.len());
+    }
+
+    #[test]
+    fn task_experience_is_capped_per_day() {
+        let mut c = fresh();
+        for _ in 0..TASKS_PER_DAY + 3 {
+            c.task_done(100);
+        }
+        assert_eq!(c.xp + xp_for(1) * (c.level - 1), XP_TASK * TASKS_PER_DAY);
+        let before = (c.level, c.xp);
+        c.task_done(101); // a new day counts again
+        assert_ne!((c.level, c.xp), before);
+        assert_eq!(c.tasks_today, 1);
     }
 
     #[test]

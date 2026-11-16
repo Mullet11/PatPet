@@ -48,7 +48,7 @@ click it. It jumps with joy and little hearts float up (once every 2 seconds at 
 
 ### Levels and rooms
 
-Feeding (+5), playing (+8), a bath (+5), petting (+1) and every task you tick off (+10) give experience;
+Feeding (+5), playing (+8), a bath (+5), petting (+1) and every task you tick off (+10, the first time only, up to 5 tasks a day) give experience;
 actions only count while that need is below 90%. Level *n* needs 40 + 20·*n* experience. Levelling up plays
 a celebration and opens new rooms; switch between open rooms with the arrows at the top right of the room.
 

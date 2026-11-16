@@ -12,6 +12,19 @@ pub struct Task {
     pub notified: bool,
     /// early reminders already shown (or skipped), one bit per entry of app::REMINDERS
     pub alerts: u8,
+    /// ticking it off already earned the cat experience (only the first time counts)
+    pub rewarded: bool,
+}
+
+impl Task {
+    /// Tick it off or back on. Returns (now done, done for the first time): only the first
+    /// time earns the cat experience, so unticking and ticking again earns nothing more.
+    pub fn toggle(&mut self) -> (bool, bool) {
+        self.done = !self.done;
+        let first = self.done && !self.rewarded;
+        self.rewarded |= self.done;
+        (self.done, first)
+    }
 }
 
 /// Switches from the tray menu.
@@ -74,6 +87,14 @@ pub fn save(d: &Data) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_task_earns_experience_once() {
+        let mut t = Task::default();
+        assert_eq!(t.toggle(), (true, true));
+        assert_eq!(t.toggle(), (false, false));
+        assert_eq!(t.toggle(), (true, false));
+    }
 
     #[test]
     fn screenshots_on_by_default() {
