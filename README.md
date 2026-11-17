@@ -32,15 +32,18 @@ A small pixel cat lives in the island and follows what you are doing:
 ### Looking after it
 
 The Pet tab shows the cat's room. It strolls around, grooms, wags its tail and stretches now and then.
-Below the room are four cards, one per need. Each need runs down in real time, also while PatPet is closed
-(a long absence counts as at most 3 days):
+Below the room are four cards, one per need. Each need runs down in real time; while PatPet is closed
+(or the PC sleeps) food, fun and hygiene drop four times slower, and a long absence counts as at most 3 days:
 
 | Card | Need | Empties in about | What it does |
 | --- | --- | --- | --- |
-| Feed | food | 8 hours | +35 food, the cat eats from its bowl |
-| Play | fun | 10 hours | +30 fun, −5 energy, the cat plays with yarn and pounces |
+| Feed | food | 14 hours | +40 food, the cat eats from its bowl |
+| Play | fun | 17 hours | +30 fun, −5 energy, the cat plays with yarn and pounces |
 | Sleep / Wake | energy | 16 hours awake | lights out; it sleeps until fully rested (+25 an hour), or until you wake it |
-| Bath | hygiene | 24 hours | back to 100, with a bath and a shake |
+| Bath | hygiene | 33 hours | back to 100, with a bath and a shake |
+
+With a few meals, games and a bath a day the cat stays happy all day; left alone, it gets sad within a
+working day.
 
 The cat also sleeps when you leave the PC for 5 minutes, and time PatPet is closed counts as sleep.
 When a need drops below 25% the cat shows it (hungry, sad, sleepy or dirty, in the room and in the closed
@@ -49,10 +52,20 @@ island), and a gentle notice says so at most every 3 hours. Nothing worse happen
 **Petting:** in the closed island, move the mouse back and forth over the cat; in the open island,
 click it. It jumps with joy and little hearts float up (once every 2 seconds at most).
 
+### Breaks
+
+After 50 minutes of work (mouse or keyboard used within the last minute) the cat stretches and suggests a
+short break. Tap the notice and the closed island counts down 5 minutes while the cat naps; leave mouse and
+keyboard alone for 3 of those minutes and the break counts: +20 fun and +6 experience (up to 8 breaks a day).
+Let the notice go by and it asks again after 15 more minutes of work, twice at most. Skipping costs nothing:
+the cat is never sad about it. Being away for 5 minutes on your own counts as a break too (the 50 minutes
+start again, without a notice). It waits while a full-screen app is in front. Turn it off with
+**Break reminders from the cat** in the right-click menu.
+
 ### Levels and rooms
 
-Feeding (+5), playing (+8), a bath (+5), petting (+1) and every task you tick off (+10, the first time only, up to 5 tasks a day) give experience;
-actions only count while that need is below 90%. Level *n* needs 40 + 20·*n* experience. Levelling up plays
+Feeding (+5), playing (+8), a bath (+5), petting (+1), a break (+6, up to 8 a day) and every task you tick off (+10, the first time only, up to 5 tasks a day) give experience;
+actions only count while that need is below 95%. With everyday care the castle opens after about six weeks. Level *n* needs 40 + 20·*n* experience. Levelling up plays
 a celebration and opens new rooms; switch between open rooms with the arrows at the top right of the room.
 
 | Level | Room |
@@ -184,7 +197,7 @@ This runs `cargo build --release`; `build.rs` embeds `assets/app.ico` and the ma
 
 Or just double-click `rebuild.bat`: it closes the running PatPet, builds, and starts the new build.
 
-For screenshots and testing, `PATPET_DEMO=pet|petroom|pethungry|petnap|petlevel|petpill|media|lyrics|shelf|tasks|tasksday|taskremind|clipboard|clipboardempty|tasksempty|toast|volume|shelfimg|cliphover|cliphoverfull|caps|capsoff|tws|charging|copied|idle|line`
+For screenshots and testing, `PATPET_DEMO=pet|petroom|breakdue|breaktimer|pethungry|petnap|petlevel|petpill|media|lyrics|shelf|tasks|tasksday|taskremind|clipboard|clipboardempty|tasksempty|toast|volume|shelfimg|cliphover|cliphoverfull|caps|capsoff|tws|charging|copied|idle|line`
 opens a specific view on start (`pet`: the happy cat with hearts; demo mode never saves data).
 With `PATPET_DUMP=out.bmp` as well, the settled frame is saved to that file and PatPet quits. `PATPET_DEMO=stress` keeps opening and closing the island
 to check for leaks (`PATPET_STRESS=fetch|toggle`, `PATPET_STRESS_MS`, `PATPET_STRESS_N`). `PATPET_MOUSE=x,y` pretends

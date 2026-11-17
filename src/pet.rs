@@ -41,6 +41,8 @@ pub enum Action {
     Play,
     Bath,
     LevelUp,
+    /// "time for a break?"
+    Stretch,
 }
 
 const MIN_HOLD: Duration = Duration::from_millis(1500);
@@ -89,6 +91,7 @@ pub struct Pet {
     generation: u32,
     playing: bool,
     napping: bool,
+    resting: bool,
     walking: bool,
     need: Option<Need>,
     idle: Duration,
@@ -112,6 +115,7 @@ impl Pet {
             generation: 0,
             playing: false,
             napping: false,
+            resting: false,
             walking: false,
             need: None,
             idle: Duration::ZERO,
@@ -176,6 +180,12 @@ impl Pet {
         self.update(now, false)
     }
 
+    /// The user is on a break: the cat curls up and rests with them.
+    pub fn set_resting(&mut self, resting: bool, now: Instant) -> bool {
+        self.resting = resting;
+        self.update(now, false)
+    }
+
     /// The cat is strolling around its room (only while the room is on screen).
     pub fn set_walking(&mut self, walking: bool, now: Instant) -> bool {
         self.walking = walking;
@@ -204,6 +214,7 @@ impl Pet {
             Action::Play => self.play_out(&[(Mood::Play, secs(3.0)), (Mood::Pounce, Mood::Pounce.once()), (Mood::Happy, Mood::Happy.once())], now),
             Action::Bath => self.play_out(&[(Mood::Bath, secs(3.0)), (Mood::Shake, Mood::Shake.once())], now),
             Action::LevelUp => self.play_out(&[(Mood::LevelUp, Mood::LevelUp.once() * 2)], now),
+            Action::Stretch => self.play_out(&[(Mood::Stretch, Mood::Stretch.once()), (Mood::Yawn, Mood::Yawn.once())], now),
         }
     }
 
@@ -280,7 +291,7 @@ impl Pet {
 
     /// The mood when no action is being played out.
     fn base(&self) -> Mood {
-        if self.napping {
+        if self.napping || self.resting {
             Mood::Sleep
         } else if self.playing {
             Mood::Music

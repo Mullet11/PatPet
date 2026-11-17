@@ -15,16 +15,16 @@ pub enum Need {
 /// Below this a need shows on the cat (and may bring a notice).
 pub const LOW: f32 = 25.0;
 /// Actions only earn experience while the need is not already almost full.
-const NEARLY_FULL: f32 = 90.0;
+const NEARLY_FULL: f32 = 95.0;
 /// How much each need drops per hour (energy: while awake).
-const FOOD_PER_H: f32 = 12.5;
-const FUN_PER_H: f32 = 10.0;
-const CLEAN_PER_H: f32 = 4.0;
+const FOOD_PER_H: f32 = 7.0;
+const FUN_PER_H: f32 = 6.0;
+const CLEAN_PER_H: f32 = 3.0;
 const ENERGY_PER_H: f32 = 6.0;
 /// Energy regained per hour of sleep.
 const REST_PER_H: f32 = 25.0;
 /// While PatPet is closed (or the PC sleeps) food, fun and cleanliness drop this much slower.
-const AWAY_RATE: f32 = 1.0;
+const AWAY_RATE: f32 = 0.25;
 /// A longer gap (PatPet closed for days) counts as this long, so the cat is sad, not empty.
 const MAX_GAP_S: i64 = 3 * 86400;
 
@@ -46,6 +46,10 @@ pub const XP_PET: u32 = 1;
 pub const XP_TASK: u32 = 10;
 /// Ticked-off tasks earn experience this many times a day at most.
 pub const TASKS_PER_DAY: u32 = 5;
+/// A break taken (see breaks.rs): fun and experience, this many times a day at most.
+pub const XP_BREAK: u32 = 6;
+const FUN_BREAK: f32 = 20.0;
+pub const BREAKS_PER_DAY: u32 = 8;
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 #[serde(default)]
@@ -69,11 +73,14 @@ pub struct Care {
     /// experience on it
     pub task_day: i64,
     pub tasks_today: u32,
+    /// the same for breaks taken
+    pub break_day: i64,
+    pub breaks_today: u32,
 }
 
 impl Default for Care {
     fn default() -> Self {
-        Care { food: 80.0, fun: 80.0, energy: 80.0, clean: 80.0, level: 1, xp: 0, room: 0, nap: false, updated: 0, noticed: 0, task_day: 0, tasks_today: 0 }
+        Care { food: 80.0, fun: 80.0, energy: 80.0, clean: 80.0, level: 1, xp: 0, room: 0, nap: false, updated: 0, noticed: 0, task_day: 0, tasks_today: 0, break_day: 0, breaks_today: 0 }
     }
 }
 
@@ -137,7 +144,7 @@ impl Care {
 
     /// Feeding; returns levels gained.
     pub fn feed(&mut self) -> u32 {
-        let earned = Self::fill(&mut self.food, 35.0);
+        let earned = Self::fill(&mut self.food, 40.0);
         self.nap = false;
         if earned {
             self.gain(XP_FEED)
@@ -198,6 +205,20 @@ impl Care {
         self.gain(XP_TASK)
     }
 
+    /// The user took a break on `day`: the cat had a good time too. Returns levels gained.
+    pub fn took_break(&mut self, day: i64) -> u32 {
+        if self.break_day != day {
+            self.break_day = day;
+            self.breaks_today = 0;
+        }
+        self.fun = (self.fun + FUN_BREAK).min(100.0);
+        if self.breaks_today >= BREAKS_PER_DAY {
+            return 0;
+        }
+        self.breaks_today += 1;
+        self.gain(XP_BREAK)
+    }
+
     /// Add experience; returns how many levels that made.
     pub fn gain(&mut self, xp: u32) -> u32 {
         self.xp += xp;
@@ -235,11 +256,23 @@ mod tests {
     #[test]
     fn needs_run_down_over_time() {
         let mut c = fresh();
-        c.advance(T + 3600, false);
-        assert_eq!(c.food, 80.0 - FOOD_PER_H);
-        assert_eq!(c.fun, 80.0 - FUN_PER_H);
-        assert_eq!(c.clean, 80.0 - CLEAN_PER_H);
+        for m in 1..=60 {
+            c.advance(T + m * 60, false);
+        }
+        let near = |a: f32, b: f32| (a - b).abs() < 0.01;
+        assert!(near(c.food, 80.0 - FOOD_PER_H), "{}", c.food);
+        assert!(near(c.fun, 80.0 - FUN_PER_H));
+        assert!(near(c.clean, 80.0 - CLEAN_PER_H));
         assert_eq!(c.updated, T + 3600);
+    }
+
+    #[test]
+    fn needs_drop_slower_while_patpet_is_closed() {
+        let mut c = fresh();
+        c.advance(T + 3600, false); // one gap of an hour: PatPet was not running
+        assert_eq!(c.food, 80.0 - FOOD_PER_H * AWAY_RATE);
+        assert_eq!(c.fun, 80.0 - FUN_PER_H * AWAY_RATE);
+        assert_eq!(c.clean, 80.0 - CLEAN_PER_H * AWAY_RATE);
     }
 
     #[test]
@@ -250,8 +283,8 @@ mod tests {
             a.advance(T + s * 60, false);
         }
         b.advance(T + 3600, false);
-        // b counts the hour as time away (asleep): only energy differs
-        assert!((a.food - b.food).abs() < 0.01 && (a.fun - b.fun).abs() < 0.01);
+        // b counts the hour as time away: it slept, and its needs ran down more slowly
+        assert!(b.food > a.food && b.fun > a.fun);
         assert!(a.energy < 80.0 && b.energy > 80.0);
     }
 
@@ -302,7 +335,7 @@ mod tests {
         let mut c = fresh();
         c.food = 50.0;
         c.feed();
-        assert_eq!((c.food, c.xp), (85.0, XP_FEED));
+        assert_eq!((c.food, c.xp), (90.0, XP_FEED));
         c.feed();
         assert_eq!((c.food, c.xp), (100.0, 2 * XP_FEED));
         c.feed(); // already full: no experience
@@ -375,6 +408,34 @@ mod tests {
         low
     }
 
+    #[test]
+    fn a_cared_for_cat_is_not_low_for_long() {
+        let mut c = fresh();
+        for day in 0..30 {
+            let low = sim_day(&mut c, day, true);
+            assert!(low <= 30, "day {day}: low for {low} minutes");
+        }
+        // the castle comes after about six weeks of ordinary care
+        let mut level = c;
+        let mut day = 30;
+        while level.level < ROOMS[ROOMS.len() - 1].2 && day < 80 {
+            sim_day(&mut level, day, true);
+            day += 1;
+        }
+        assert!((35..=45).contains(&day), "castle on day {day}");
+    }
+
+    #[test]
+    fn a_neglected_cat_gets_low_within_a_working_day() {
+        let mut c = fresh();
+        let mut m = 0;
+        while c.lowest().is_none() {
+            m += 1;
+            c.advance(T + m * 60, false);
+        }
+        assert!(m < 9 * 60, "low after {m} minutes");
+    }
+
     /// The numbers behind the care settings: cargo test balance_report -- --ignored --nocapture
     #[test]
     #[ignore]
@@ -411,6 +472,21 @@ mod tests {
             "after 15 h closed (evening to morning): food {:.0}, fun {:.0}, energy {:.0}, clean {:.0}",
             night.food, night.fun, night.energy, night.clean
         );
+    }
+
+    #[test]
+    fn breaks_cheer_the_cat_up_a_few_times_a_day() {
+        let mut c = fresh();
+        c.fun = 10.0;
+        c.took_break(100);
+        assert_eq!((c.fun, c.xp), (30.0, XP_BREAK));
+        for _ in 0..BREAKS_PER_DAY + 2 {
+            c.took_break(100);
+        }
+        assert_eq!(c.breaks_today, BREAKS_PER_DAY);
+        assert_eq!(c.fun, 100.0); // fun always, experience only up to the daily limit
+        c.took_break(101);
+        assert_eq!(c.breaks_today, 1);
     }
 
     #[test]

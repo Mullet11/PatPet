@@ -70,6 +70,8 @@ const ROOM_H: f32 = crate::sprites::ROOM_H as f32 * ROOM_SCALE;
 const WALK_SPEED: f32 = 0.07;
 /// A "your cat needs..." notice comes at most this often.
 const NEED_NOTICE_EVERY: i64 = 3 * 3600;
+/// What the closed island says during a break.
+const BREAK_LABEL: &str = "Break";
 /// Heart glyph (Segoe Fluent Icons / MDL2: HeartFill).
 const HEART: char = '\u{EB52}';
 
@@ -155,6 +157,8 @@ enum Live {
     Idle,
     Media,
     Task,
+    /// a break with the cat: the time left
+    Break,
 }
 
 // compact-island metrics (DIP)
@@ -317,6 +321,8 @@ enum Tap {
     Update,
     /// open the releases page (the automatic update failed)
     Releases,
+    /// start the break the notice suggests
+    Break,
 }
 
 struct Toast {
@@ -528,6 +534,8 @@ pub struct App {
     upd_shown: Option<String>,
     /// the pixel cat: mood logic, its sprite strips (by sprites::index) and the frame on screen
     pet: Pet,
+    /// break reminders (see breaks.rs)
+    breaks: crate::breaks::Breaks,
     cat_strips: Vec<Option<crate::sprites::Strip>>,
     cat_bmps: Vec<Option<crate::gfx::Pixmap>>,
     props_bmp: Option<crate::gfx::Pixmap>,
@@ -789,6 +797,7 @@ impl App {
             upd_next: n + Duration::from_secs(20),
             upd_shown: None,
             pet: Pet::new(CAT_SLEEP_AFTER),
+            breaks: Default::default(),
             cat_strips: crate::sprites::cats(),
             cat_bmps: Vec::new(),
             props_bmp: None,
@@ -994,6 +1003,12 @@ impl App {
                     self.on_levels(1);
                 }
                 self.expand(Some(Tab::Pet));
+            }
+            "breakdue" => self.ask_break(),
+            "breaktimer" => {
+                // a break just started
+                self.breaks.start(self.mono_secs());
+                self.pet.set_resting(true, Instant::now());
             }
             "petpill" => {
                 self.data.pet = crate::care::Care { food: 80.0, fun: 70.0, energy: 85.0, clean: 10.0, ..Default::default() };
@@ -1273,6 +1288,9 @@ impl App {
     /// (primary activity, optional secondary activity shown at the right end of the island)
     fn lives(&self) -> (Live, Option<Live>) {
         let mut v = Vec::with_capacity(3);
+        if self.breaks.resting() {
+            v.push(Live::Break);
+        }
         if self.media.is_some() {
             v.push(Live::Media);
         }
@@ -1323,6 +1341,8 @@ impl App {
                 let (text, due, _) = self.task_line().unwrap_or_default();
                 12.0 + 16.0 + 8.0 + g.measure(&text, 12.5, 500).clamp(30.0, 170.0) + 10.0 + g.measure(&due, 12.0, 600) + 14.0
             }
+            // "Break" | 4:59 — must mirror draw_compact
+            Live::Break => 10.0 + g.measure(BREAK_LABEL, 12.5, 600) + 12.0 + g.measure_clock("8:88", CLOCK_SIZE, 600) + 14.0,
         }
     }
 
@@ -1846,6 +1866,14 @@ impl App {
                 let dw = g.measure(&due, 12.0, 600);
                 g.text(&due, R::new(c.right() - 14.0 - dw, c.y, dw + 2.0, c.h), 12.0, 600, col, Al::R);
                 g.text(&text, R::new(c.x + 36.0, c.y, c.w - 36.0 - dw - 24.0, c.h), 12.5, 500, WHITE.a(0.9), Al::L);
+            }
+            Live::Break => {
+                let left = self.breaks.rest_left(self.mono_secs()).unwrap_or(0);
+                let t = format!("{}:{:02}", left / 60, left % 60);
+                g.text(BREAK_LABEL, R::new(c.x + 10.0, c.y, c.w, c.h), 12.5, 600, HEART_C, Al::L);
+                g.clock(&t, R::new(c.x, c.y, c.w - 14.0, c.h), CLOCK_SIZE, 600, WHITE, Al::R);
+                let done = 1.0 - left as f32 / crate::breaks::REST_SECS as f32;
+                self.bottom_progress(g, full, done, HEART_C.a(0.85));
             }
         }
     }
@@ -3163,7 +3191,7 @@ impl App {
             self.last_min = minute;
             redraw = true;
         }
-        let periodic = (compact && (playing || self.task_soon().is_some()))
+        let periodic = (compact && (playing || self.task_soon().is_some() || self.breaks.resting()))
             || (self.expanded
                 && match self.tab {
                     Tab::Media => playing,
@@ -3213,6 +3241,7 @@ impl App {
         // the cat's needs run down; a gentle notice when one is running low
         self.sync_care();
         self.need_notice();
+        self.break_tick();
 
         // task reminders: 1 day, 6 h, 3 h, 1 h and 30 min before, and when due. Not while
         // hidden (full-screen game, video or presentation): they come once it is back.
@@ -3827,6 +3856,7 @@ impl App {
             hidden: self.user_hidden,
             line_mode: self.data.settings.line_mode,
             screenshots: self.data.settings.screenshots,
+            breaks: self.data.settings.breaks,
             update: self.upd_avail.as_ref().map(|r| r.version.clone()),
             update_busy: self.upd_busy,
         }
@@ -3844,6 +3874,13 @@ impl App {
             }
             Tap::Releases => {
                 update::open_releases_page();
+                true
+            }
+            Tap::Break => {
+                self.breaks.start(self.mono_secs());
+                self.pet.set_resting(true, Instant::now());
+                dbg_log("break: started");
+                self.kick();
                 true
             }
         }
@@ -4202,6 +4239,57 @@ impl App {
     }
 
     /// The cat went up `ups` levels: it celebrates, and a notice says what opened up.
+    /// Seconds on a steady clock (since PatPet started), for the break timer.
+    fn mono_secs(&self) -> u64 {
+        self.t0.elapsed().as_secs()
+    }
+
+    /// Break reminders: suggest one after a long stretch of work, reward one taken.
+    fn break_tick(&mut self) {
+        if !self.data.settings.breaks || self.demo {
+            return;
+        }
+        let now_s = self.mono_secs();
+        let idle = system::user_idle().as_secs();
+        // not over a full-screen app, and not on top of another notice
+        let busy = self.all_hidden() || self.toast.is_some() || self.leaving.is_some();
+        let after = u64::from(self.data.settings.break_after_min.max(5)) * 60;
+        match self.breaks.tick(now_s, idle, busy, after) {
+            Some(crate::breaks::Event::Due) => self.ask_break(),
+            Some(crate::breaks::Event::Ignored) => dbg_log("break: not now"),
+            Some(crate::breaks::Event::Taken) => {
+                dbg_log("break: taken");
+                self.pet.set_resting(false, Instant::now());
+                let ups = self.data.pet.took_break(now().day());
+                self.dirty = true;
+                self.cheer();
+                self.notice(TIcon::Prop(prop::STAR), "Nice break!", "Your cat enjoyed it too", 6.0, HEART_C, Tap::None);
+                self.on_levels(ups);
+            }
+            Some(crate::breaks::Event::Ended) => {
+                dbg_log("break: ended without resting");
+                self.pet.set_resting(false, Instant::now());
+                self.kick();
+            }
+            None => {}
+        }
+    }
+
+    /// The cat stretches and suggests a short break.
+    fn ask_break(&mut self) {
+        dbg_log("break: suggested");
+        self.pet.act(Action::Stretch, Instant::now());
+        self.notice(
+            TIcon::Prop(prop::ZZZ),
+            "Time for a little break?",
+            "Tap to rest 5 minutes with your cat",
+            crate::breaks::ASK_SECS as f32,
+            HEART_C,
+            Tap::Break,
+        );
+        self.kick();
+    }
+
     fn on_levels(&mut self, ups: u32) {
         if ups == 0 {
             return;
@@ -4353,6 +4441,15 @@ impl App {
             self.data.settings.line_mode = !self.data.settings.line_mode;
             self.dirty = true;
             self.kick();
+        } else if cmd == tray::CMD_BREAKS {
+            self.data.settings.breaks = !self.data.settings.breaks;
+            if !self.data.settings.breaks {
+                // switched off in the middle of one: the cat gets up again
+                self.breaks = Default::default();
+                self.pet.set_resting(false, Instant::now());
+                self.kick();
+            }
+            self.dirty = true;
         } else if cmd == tray::CMD_SHOTS {
             self.data.settings.screenshots = !self.data.settings.screenshots;
             if self.data.settings.screenshots {

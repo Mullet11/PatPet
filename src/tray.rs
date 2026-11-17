@@ -14,6 +14,7 @@ pub const CMD_THEME: u32 = 13;
 pub const CMD_LINE: u32 = 14;
 pub const CMD_SHOTS: u32 = 15;
 pub const CMD_UPDATE: u32 = 16;
+pub const CMD_BREAKS: u32 = 17;
 
 /// Check marks shown in the menu.
 pub struct MenuState {
@@ -21,6 +22,7 @@ pub struct MenuState {
     pub hidden: bool,
     pub line_mode: bool,
     pub screenshots: bool,
+    pub breaks: bool,
     /// a newer version that can be installed, or what the update item says while busy
     pub update: Option<String>,
     pub update_busy: bool,
@@ -64,6 +66,7 @@ pub fn menu(hwnd: HWND, st: &MenuState) -> u32 {
         let _ = AppendMenuW(m, MF_STRING, CMD_HIDE as usize, hide);
         let _ = AppendMenuW(m, check(st.line_mode), CMD_LINE as usize, w!("Shrink to a line until hovered"));
         let _ = AppendMenuW(m, check(st.screenshots), CMD_SHOTS as usize, w!("Add screenshots to Shelf"));
+        let _ = AppendMenuW(m, check(st.breaks), CMD_BREAKS as usize, w!("Break reminders from the cat"));
         let _ = AppendMenuW(m, check(st.autostart), CMD_AUTOSTART as usize, w!("Start with Windows"));
         let _ = AppendMenuW(m, MF_STRING, CMD_THEME as usize, w!("UI colors (theme.conf)..."));
         let _ = AppendMenuW(m, MF_SEPARATOR, 0, PCWSTR::null());

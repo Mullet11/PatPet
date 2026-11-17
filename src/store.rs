@@ -35,11 +35,14 @@ pub struct Settings {
     pub line_mode: bool,
     /// put new screenshots on the Shelf
     pub screenshots: bool,
+    /// the cat suggests a short break after `break_after_min` minutes of work
+    pub breaks: bool,
+    pub break_after_min: u32,
 }
 
 impl Default for Settings {
     fn default() -> Self {
-        Settings { line_mode: false, screenshots: true }
+        Settings { line_mode: false, screenshots: true, breaks: true, break_after_min: 50 }
     }
 }
 
