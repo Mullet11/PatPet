@@ -41,9 +41,8 @@ const HEART_C: C = C::hex(0xFF7AA2);
 
 // ------------------------------------------------------------------ the cat
 
-/// Size the cat aims for in the closed island (DIP); the real size is a whole number of screen
-/// pixels per sprite pixel, so the pixel art stays sharp.
-const CAT_AIM: f32 = 28.0;
+/// Size of the cat in the closed island (DIP), the same at every screen scale.
+const CAT_SIZE: f32 = 32.0;
 /// The cat falls asleep after this long without mouse or keyboard input.
 const CAT_SLEEP_AFTER: Duration = Duration::from_secs(5 * 60);
 /// How long the hearts of a happy cat float up.
@@ -489,6 +488,8 @@ pub struct App {
     /// the cursor far away, must not close by itself right away)
     panel_entered: bool,
     anim_on: bool,
+    /// the frames now coming are only for the cat's next animation frame
+    cat_only: bool,
     last_frame: Instant,
     t0: Instant,
     last_sec: Instant,
@@ -528,10 +529,10 @@ pub struct App {
     /// the pixel cat: mood logic, its sprite strips (by sprites::index) and the frame on screen
     pet: Pet,
     cat_strips: Vec<Option<crate::sprites::Strip>>,
-    cat_bmps: Vec<Option<ID2D1Bitmap>>,
-    props_bmp: Option<ID2D1Bitmap>,
+    cat_bmps: Vec<Option<crate::gfx::Pixmap>>,
+    props_bmp: Option<crate::gfx::Pixmap>,
     /// the room shown in the Pet tab (index into care::ROOMS); decoded while that tab is open
-    room_bmp: Option<(usize, ID2D1Bitmap)>,
+    room_bmp: Option<(usize, crate::gfx::Pixmap)>,
     /// where the cat is in its room (0 = left wall, 1 = right wall), where it is heading,
     /// when it sets off again, and when its position was last moved
     room_x: f32,
@@ -763,6 +764,7 @@ impl App {
             collapse_at: None,
             panel_entered: false,
             anim_on: false,
+            cat_only: false,
             last_frame: n,
             t0: n,
             last_sec: n,
@@ -1042,6 +1044,8 @@ impl App {
     }
 
     fn kick(&mut self) {
+        // anything else asking for frames may change more than the cat
+        self.cat_only = false;
         if !self.anim_on {
             self.anim_on = true;
             self.last_frame = Instant::now();
@@ -1320,7 +1324,8 @@ impl App {
 
     // -------------------------------------------------------------- frame
 
-    pub fn frame(&mut self) {
+    /// One animation frame for every island; returns true once everything is at rest.
+    pub fn frame(&mut self) -> bool {
         let n = Instant::now();
         let dt = (n - self.last_frame).as_secs_f32().min(1.0 / 30.0);
         self.last_frame = n;
@@ -1354,10 +1359,11 @@ impl App {
             settled &= rest;
             folded &= gone;
         });
+        self.cat_only = false;
         if let Some((what, since, _)) = self.leaving {
             if folded || since.elapsed() >= LEAVE_MAX {
                 self.finish_leave(what);
-                return;
+                return true;
             }
         }
         if settled {
@@ -1386,6 +1392,7 @@ impl App {
                 let _ = KillTimer(self.hwnd, TIMER_ANIM);
             }
         }
+        settled
     }
 
     /// One frame of the island being worked on: its shape springs toward what it should show,
@@ -1465,8 +1472,22 @@ impl App {
         // testing aid: with PATPET_DEMO + PATPET_DUMP=<file.bmp>, save the primary display's
         // settled frame and quit
         let dump = std::env::var("PATPET_DUMP").ok().filter(|_| self.s.hwnd == self.hwnd);
+        // a resting pill where only the cat moved on: redraw just the cat
+        let part = self.cat_only
+            && dump.is_none()
+            && matches!(self.s.view, ViewKey::Compact(_))
+            && self.s.sw.done()
+            && self.s.sh.done()
+            && self.s.sr.done()
+            && self.s.view_age > 0.35
+            && self.s.slide.is_none()
+            && !open_moving
+            && hover_still
+            && !self.s.marquee_on.get();
         if !self.s.hidden || dump.is_some() {
-            self.render();
+            let t = Instant::now();
+            self.render(part);
+            stats::add(&stats::RENDERS, &stats::RENDER_US, t);
         }
         if let Some(path) = dump {
             if self.s.view_age > 0.3 && self.s.slide.is_none() && self.s.sw.done() && self.s.sh.done() {
@@ -1539,7 +1560,9 @@ impl App {
         rest && !pending
     }
 
-    fn render(&mut self) {
+    /// Draw the island and show it. `cat_part`: nothing but the cat changed since the last
+    /// frame, so only the cat's square is drawn and sent (when the window is still the same).
+    fn render(&mut self, cat_part: bool) {
         self.sync_thumbs();
         self.sync_cat();
         let s = self.gfx.scale;
@@ -1561,7 +1584,23 @@ impl App {
         let left = self.s.mon_cx - wpx / 2;
         let top = self.s.mon_top;
         self.s.screen_cx = (wpx / 2) as f32 / s;
-        if !self.gfx.begin(wpx, hpx) {
+        let part = match self.s.cat_rect.get() {
+            Some(c) if cat_part && self.s.win == (left, top, wpx, hpx) => {
+                // the cat sits on whole pixels and is drawn inside its square only
+                let p = RECT {
+                    left: ((c.x * s).floor() as i32).max(0),
+                    top: ((c.y * s).floor() as i32).max(0),
+                    right: ((c.right() * s).ceil() as i32).min(wpx),
+                    bottom: ((c.bottom() * s).ceil() as i32).min(hpx),
+                };
+                (p.right > p.left && p.bottom > p.top).then_some(p)
+            }
+            _ => None,
+        };
+        if part.is_some() {
+            stats::PARTS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }
+        if !self.gfx.begin(wpx, hpx, part) {
             return;
         }
         // Whole pixels for the island's left and right edges: a side falling between pixels
@@ -1576,13 +1615,24 @@ impl App {
             let sx = (wpx as f32 / s - strip_w) / 2.0;
             self.gfx.rect(R::new(sx, 0.0, strip_w, sh), C(0.0, 0.0, 0.0, 1.0 / 255.0));
         }
-        self.s.marquee_on.set(false);
-        self.draw(&self.gfx, &mut ui, island);
-        if !self.s.marquee_on.get() {
-            // nothing long under the mouse any more: the next one starts from its beginning
-            self.s.marquee_at.set(None);
+        if let (Some(_), Some(cat)) = (part, self.s.cat_rect.get()) {
+            // just the island's background behind the cat, and the cat (the hit areas stay)
+            let g = &self.gfx;
+            let rad = self.s.sr.x.clamp(0.0, island.h / 2.0);
+            g.rrect_bg(R::new(island.x, island.y - rad, island.w, island.h + rad), rad, island.y, island.bottom());
+            self.draw_cat_in(g, cat);
+            ui.hits = std::mem::take(&mut self.s.hits);
+        } else {
+            self.s.marquee_on.set(false);
+            self.draw(&self.gfx, &mut ui, island);
+            if !self.s.marquee_on.get() {
+                // nothing long under the mouse any more: the next one starts from its beginning
+                self.s.marquee_at.set(None);
+            }
         }
+        let t = Instant::now();
         self.gfx.end(self.s.hwnd, left, top, wpx, hpx);
+        stats::END_US.fetch_add(t.elapsed().as_micros() as u64, std::sync::atomic::Ordering::Relaxed);
         self.s.win = (left, top, wpx, hpx);
         self.s.isl_px = (
             left + (island.x * s) as i32,
@@ -2827,6 +2877,11 @@ impl App {
                     let ups = self.data.pet.task_done(now().day());
                     self.on_levels(ups);
                 }
+                let p = &self.data.pet;
+                dbg_log(&format!(
+                    "task {id}: done={} first={} -> level {} xp {} ({} tasks rewarded today)",
+                    done.0, done.1, p.level, p.xp, p.tasks_today
+                ));
             }
             Act::Pet => self.pet_cat(),
             Act::Care(need) => self.care_for(need),
@@ -3117,9 +3172,9 @@ impl App {
         self.pet.tick(n, system::user_idle(), now().h as u32);
         self.wander(n);
         let cat_shown = self.cat_visible();
-        if cat_shown && self.pet.frame(n) != self.cat_frame {
-            redraw = true;
-        }
+        let others = redraw || periodic;
+        let cat_moved = cat_shown && self.pet.frame(n) != self.cat_frame;
+        redraw |= cat_moved;
         // quicker while a panel is about to close, so it closes on time
         let mut ms = if fast || (self.expanded && self.collapse_at.is_some()) { 90 } else { 250 };
         if cat_shown {
@@ -3127,11 +3182,23 @@ impl App {
         }
         self.set_tick(ms);
         if (periodic || redraw) && !self.all_hidden() {
-            self.kick();
+            // only the cat moved on a frame: resting islands just redraw the cat
+            let cat_only = cat_moved && !others && !self.anim_on && !self.hearts_on();
+            if cat_only {
+                // one frame right away: no need to wake the refresh-rate pacing for it
+                self.cat_only = true;
+                self.last_frame = Instant::now();
+                if !self.frame() {
+                    self.kick();
+                }
+            } else {
+                self.kick();
+            }
         }
     }
 
     fn per_second(&mut self) {
+        stats::report();
         // hide during full-screen apps / presentations; reminders wait until it is back
         self.apply_visibility();
         let t = now();
@@ -3320,6 +3387,7 @@ impl App {
                 }
                 Event::Drop(files) => {
                     self.drag_hover = false;
+                    dbg_log(&format!("drop: {} file(s) on the island under the cursor ({:?})", files.len(), self.island_at_cursor()));
                     for f in files {
                         if !self.data.shelf.contains(&f) {
                             self.data.shelf.push(f);
@@ -3510,6 +3578,7 @@ impl App {
     /// sliding off before releasing cancels. Shelf tiles can be dragged out while held.
     pub fn on_ldown(&mut self, lp: LPARAM) {
         let p = self.local(lp);
+        dbg_log(&format!("press at {:.0},{:.0} (foreground: {:?})", p.0, p.1, unsafe { GetForegroundWindow() }));
         self.s.mouse = Some(p);
         self.s.press = Some((self.hit_at(p), p.0, p.1));
         unsafe {
@@ -3522,7 +3591,11 @@ impl App {
         unsafe {
             let _ = ReleaseCapture();
         }
-        let Some((hit, _, _)) = self.s.press.take() else { return };
+        let Some((hit, _, _)) = self.s.press.take() else {
+            dbg_log("release without a press");
+            return;
+        };
+        dbg_log(&format!("release at {:.0},{:.0} on {hit:?}", p.0, p.1));
         // released somewhere else than where it was pressed: cancel
         if !self.cursor_inside() || self.hit_at(p) != hit {
             return;
@@ -3905,7 +3978,7 @@ impl App {
                 // count only: copied text must never reach the log file
                 dbg_log(&format!("clipboard: {} entries", self.clips.len()));
                 if self.expanded && self.tab == Tab::Clipboard && !self.all_hidden() {
-                    self.render();
+                    self.render(false);
                 }
             }
             // copying the same text again is a copy too, but some apps announce one copy twice
@@ -3927,11 +4000,10 @@ impl App {
 
     // -------------------------------------------------------------- the cat
 
-    /// Cat size (DIP): whole screen pixels per sprite pixel, close to CAT_AIM.
+    /// Cat size (DIP): CAT_SIZE at every screen scale, in whole screen pixels.
     fn cat_size(&self) -> f32 {
         let s = self.gfx.scale;
-        let k = (CAT_AIM * s / crate::sprites::FRAME as f32).round().max(1.0);
-        crate::sprites::FRAME as f32 * k / s
+        (CAT_SIZE * s).round() / s
     }
 
     /// Room the cat takes at the left of the closed island.
@@ -3953,13 +4025,13 @@ impl App {
     fn sync_cat(&mut self) {
         if self.cat_bmps.is_empty() {
             let strips = std::mem::take(&mut self.cat_strips);
-            self.cat_bmps = strips.iter().map(|s| s.as_ref().and_then(|s| self.gfx.create_bitmap(s.w, s.h, &s.px))).collect();
-            self.props_bmp = crate::sprites::props().and_then(|s| self.gfx.create_bitmap(s.w, s.h, &s.px));
+            self.cat_bmps = strips.into_iter().map(|s| s.and_then(|s| self.gfx.pixmap(s.w, s.h, s.px))).collect();
+            self.props_bmp = crate::sprites::props().and_then(|s| self.gfx.pixmap(s.w, s.h, s.px));
         }
         if self.expanded && self.tab == Tab::Pet {
             let i = self.data.pet.room_index();
             if self.room_bmp.as_ref().map(|(k, _)| *k) != Some(i) {
-                self.room_bmp = crate::sprites::room(i).and_then(|s| self.gfx.create_bitmap(s.w, s.h, &s.px)).map(|b| (i, b));
+                self.room_bmp = crate::sprites::room(i).and_then(|s| self.gfx.pixmap(s.w, s.h, s.px)).map(|b| (i, b));
             }
         }
         let n = Instant::now();
@@ -4019,7 +4091,7 @@ impl App {
     fn draw_cat_frame(&self, g: &Gfx, mood: Mood, i: usize, r: R, opacity: f32) {
         if let Some(Some(b)) = self.cat_bmps.get(crate::sprites::index(mood)) {
             let f = crate::sprites::FRAME as f32;
-            g.sprite(b, R::new(i as f32 * f, 0.0, f, f), r, opacity);
+            g.pixel_art(b, R::new(i as f32 * f, 0.0, f, f), r, opacity);
         }
     }
 
@@ -4027,7 +4099,7 @@ impl App {
     fn draw_prop(&self, g: &Gfx, i: usize, r: R) {
         if let Some(b) = &self.props_bmp {
             let f = crate::sprites::PROP as f32;
-            g.sprite(b, R::new(i as f32 * f, 0.0, f, f), r, 1.0);
+            g.pixel_art(b, R::new(i as f32 * f, 0.0, f, f), r, 1.0);
         }
     }
 
@@ -4167,7 +4239,7 @@ impl App {
         match &self.room_bmp {
             Some((_, b)) => {
                 let (w, h) = (crate::sprites::ROOM_W as f32, crate::sprites::ROOM_H as f32);
-                g.sprite(b, R::new(0.0, 0.0, w, h), R::new(room.x, room.y, w * ROOM_SCALE, h * ROOM_SCALE), 1.0);
+                g.pixel_art(b, R::new(0.0, 0.0, w, h), R::new(room.x, room.y, w * ROOM_SCALE, h * ROOM_SCALE), 1.0);
             }
             None => g.rect(room, SURF),
         }
@@ -4783,6 +4855,49 @@ fn clipboard_text() -> Option<String> {
         })();
         let _ = CloseClipboard();
         r
+    }
+}
+
+/// Testing aid: with PATPET_DEBUG, how many islands were drawn each minute and how long that
+/// took, to keep an eye on the CPU an idle cat costs.
+mod stats {
+    use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
+    use std::time::Instant;
+
+    pub static RENDERS: AtomicU64 = AtomicU64::new(0);
+    pub static RENDER_US: AtomicU64 = AtomicU64::new(0);
+    /// of that, handing the picture to Windows (EndDraw + UpdateLayeredWindow)
+    pub static END_US: AtomicU64 = AtomicU64::new(0);
+    /// of those, only the cat
+    pub static PARTS: AtomicU64 = AtomicU64::new(0);
+    static SINCE: std::sync::Mutex<Option<Instant>> = std::sync::Mutex::new(None);
+
+    pub fn add(count: &AtomicU64, us: &AtomicU64, t: Instant) {
+        count.fetch_add(1, Relaxed);
+        us.fetch_add(t.elapsed().as_micros() as u64, Relaxed);
+    }
+
+    pub fn report() {
+        if std::env::var_os("PATPET_DEBUG").is_none() {
+            return;
+        }
+        let mut since = SINCE.lock().unwrap_or_else(|e| e.into_inner());
+        let start = *since.get_or_insert_with(Instant::now);
+        let secs = start.elapsed().as_secs_f32();
+        if secs < 60.0 {
+            return;
+        }
+        *since = Some(Instant::now());
+        let (n, us, end) = (RENDERS.swap(0, Relaxed), RENDER_US.swap(0, Relaxed), END_US.swap(0, Relaxed));
+        let parts = PARTS.swap(0, Relaxed);
+        let each = |us: u64| us as f32 / 1000.0 / n.max(1) as f32;
+        super::dbg_log(&format!(
+            "draws: {n} in {secs:.0} s ({:.1}/s, {parts} only the cat), {:.2} ms each ({:.2} ms handing over), {:.2} % of a core",
+            n as f32 / secs,
+            each(us),
+            each(end),
+            us as f32 / 10_000.0 / secs
+        ));
     }
 }
 

@@ -23,6 +23,8 @@ const CLEAN_PER_H: f32 = 4.0;
 const ENERGY_PER_H: f32 = 6.0;
 /// Energy regained per hour of sleep.
 const REST_PER_H: f32 = 25.0;
+/// While PatPet is closed (or the PC sleeps) food, fun and cleanliness drop this much slower.
+const AWAY_RATE: f32 = 1.0;
 /// A longer gap (PatPet closed for days) counts as this long, so the cat is sad, not empty.
 const MAX_GAP_S: i64 = 3 * 86400;
 
@@ -97,9 +99,10 @@ impl Care {
         // more than a minute between two calls: PatPet was not running (or the PC slept)
         let away = gap > 60;
         let h = gap.min(MAX_GAP_S) as f32 / 3600.0;
-        self.food = (self.food - FOOD_PER_H * h).max(0.0);
-        self.fun = (self.fun - FUN_PER_H * h).max(0.0);
-        self.clean = (self.clean - CLEAN_PER_H * h).max(0.0);
+        let d = if away { h * AWAY_RATE } else { h };
+        self.food = (self.food - FOOD_PER_H * d).max(0.0);
+        self.fun = (self.fun - FUN_PER_H * d).max(0.0);
+        self.clean = (self.clean - CLEAN_PER_H * d).max(0.0);
         if asleep || self.nap || away {
             self.energy = (self.energy + REST_PER_H * h).min(100.0);
         } else {
@@ -334,6 +337,80 @@ mod tests {
         c.task_done(101); // a new day counts again
         assert_ne!((c.level, c.xp), before);
         assert_eq!(c.tasks_today, 1);
+    }
+
+    /// One simulated day: PatPet runs 08:00-17:00 with the given care (minute by minute), and
+    /// is closed the rest of the day. Returns the minutes the cat spent with a need low.
+    fn sim_day(c: &mut Care, day: i64, care: bool) -> u32 {
+        let start = T + day * 86400;
+        c.advance(start + 8 * 3600, false); // the night, PatPet closed
+        let mut low = 0;
+        for m in 0..9 * 60 {
+            let t = start + 8 * 3600 + m * 60;
+            c.advance(t, false);
+            if care {
+                match m {
+                    0 | 240 | 480 => {
+                        c.feed();
+                    }
+                    120 | 360 => {
+                        c.play();
+                    }
+                    300 => {
+                        c.bath();
+                    }
+                    _ => {}
+                }
+                if m % 50 == 25 {
+                    c.pet();
+                }
+                if m == 100 || m == 250 || m == 400 {
+                    c.task_done(day);
+                }
+            }
+            if c.lowest().is_some() {
+                low += 1;
+            }
+        }
+        low
+    }
+
+    /// The numbers behind the care settings: cargo test balance_report -- --ignored --nocapture
+    #[test]
+    #[ignore]
+    fn balance_report() {
+        let mut c = fresh();
+        let total = |c: &Care| (1..c.level).map(xp_for).sum::<u32>() + c.xp;
+        println!("cared for: 3 meals, 2 games, 1 bath, about 10 pats, 3 tasks a day; PatPet on 08-17");
+        let mut room = 1;
+        let mut before = 0;
+        for day in 0..60 {
+            let low = sim_day(&mut c, day, true);
+            if day == 0 || day == 6 {
+                println!("  day {}: {} XP, low for {low} of 540 min", day + 1, total(&c) - before);
+            }
+            before = total(&c);
+            while room < ROOMS.len() && c.level >= ROOMS[room].2 {
+                println!("  {} (level {}) on day {}", ROOMS[room].1, ROOMS[room].2, day + 1);
+                room += 1;
+            }
+        }
+        println!("left alone from 80 (PatPet open, awake):");
+        for need in [Need::Food, Need::Fun, Need::Energy, Need::Clean] {
+            let mut x = fresh();
+            let mut m = 0;
+            while x.value(need) >= LOW && m < 3 * 1440 {
+                m += 1;
+                x.advance(T + m * 60, false);
+            }
+            println!("  {need:?} low after {:.1} h", m as f32 / 60.0);
+        }
+        let mut night = fresh();
+        night.advance(T + 15 * 3600, false);
+        println!(
+            "after 15 h closed (evening to morning): food {:.0}, fun {:.0}, energy {:.0}, clean {:.0}",
+            night.food, night.fun, night.energy, night.clean
+        );
     }
 
     #[test]

@@ -222,13 +222,15 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
         let r = match msg {
             WM_TIMER if main => {
                 match wp.0 {
-                    1 => app.frame(),
+                    1 => {
+                        app.frame();
+                    }
                     _ => app.tick(),
                 }
                 done
             }
             vsync::WM_APP_FRAME if main => {
-                app.frame();
+                let _ = app.frame();
                 done
             }
             // a second launch or `--quit` may find any of the windows

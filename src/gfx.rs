@@ -62,6 +62,41 @@ enum Face {
 
 type FmtKey = (u32, u32, Al, Face, bool);
 
+/// Pixel art for `Gfx::pixel_art`: the original pixels and bitmap, plus copies enlarged by a
+/// whole factor (made when a screen scale first needs them).
+pub struct Pixmap {
+    w: u32,
+    h: u32,
+    px: Vec<u8>,
+    base: ID2D1Bitmap,
+    big: RefCell<Vec<(u32, ID2D1Bitmap)>>,
+}
+
+impl Pixmap {
+    fn enlarged(&self, g: &Gfx, k: u32) -> Option<ID2D1Bitmap> {
+        if let Some((_, b)) = self.big.borrow().iter().find(|(f, _)| *f == k) {
+            return Some(b.clone());
+        }
+        let px = enlarge(&self.px, self.w, self.h, k);
+        let b = g.create_bitmap(self.w * k, self.h * k, &px)?;
+        self.big.borrow_mut().push((k, b.clone()));
+        Some(b)
+    }
+}
+
+/// Every pixel of a `w`×`h` BGRA image repeated `k`×`k` times.
+pub fn enlarge(px: &[u8], w: u32, h: u32, k: u32) -> Vec<u8> {
+    let (w, h, k) = (w as usize, h as usize, k as usize);
+    let mut out = Vec::with_capacity(px.len() * k * k);
+    for y in 0..h {
+        let row: Vec<u8> = px[y * w * 4..(y + 1) * w * 4].chunks(4).flat_map(|p| p.repeat(k)).collect();
+        for _ in 0..k {
+            out.extend_from_slice(&row);
+        }
+    }
+    out
+}
+
 pub struct Gfx {
     factory: ID2D1Factory,
     dw: IDWriteFactory,
@@ -88,6 +123,8 @@ pub struct Gfx {
     clips: RefCell<Vec<Clip>>,
     /// a layer was used since the layers were last (re)created
     layers_used: Cell<bool>,
+    /// the frame being drawn only updates this part of the window (pixels)
+    part: Cell<Option<RECT>>,
     round: ID2D1StrokeStyle,
     dash: ID2D1StrokeStyle,
     fmts: RefCell<HashMap<FmtKey, IDWriteTextFormat>>,
@@ -175,6 +212,7 @@ impl Gfx {
                 depth: Cell::new(0),
                 clips: RefCell::new(Vec::new()),
                 layers_used: Cell::new(false),
+                part: Cell::new(None),
                 round,
                 dash,
                 fmts: RefCell::new(HashMap::new()),
@@ -299,7 +337,9 @@ impl Gfx {
         self.layers_used.set(false);
     }
 
-    pub fn begin(&mut self, w: i32, h: i32) -> bool {
+    /// Start a frame of `w`×`h` pixels. With `part` (pixels), only that part is drawn and
+    /// later sent to the window; the rest of the window keeps what it showed.
+    pub fn begin(&mut self, w: i32, h: i32, part: Option<RECT>) -> bool {
         if !self.ensure_dib(w, h, false) {
             return false;
         }
@@ -314,8 +354,15 @@ impl Gfx {
             }
             self.rt.BeginDraw();
             self.rt.SetTransform(&Matrix3x2::identity());
+            if let Some(p) = part {
+                let s = self.scale;
+                let r = D2D_RECT_F { left: p.left as f32 / s, top: p.top as f32 / s, right: p.right as f32 / s, bottom: p.bottom as f32 / s };
+                self.rt.PushAxisAlignedClip(&r, D2D1_ANTIALIAS_MODE_ALIASED);
+            }
+            // (inside a clip, Clear only clears the clip)
             self.rt.Clear(Some(&C(0.0, 0.0, 0.0, 0.0).d2d()));
         }
+        self.part.set(part);
         self.depth.set(0);
         self.clips.borrow_mut().clear();
         true
@@ -326,6 +373,10 @@ impl Gfx {
             while !self.clips.borrow().is_empty() {
                 self.pop();
             }
+            let part = self.part.take();
+            if part.is_some() {
+                self.rt.PopAxisAlignedClip();
+            }
             let _ = self.rt.EndDraw(None, None);
             let blend = BLENDFUNCTION {
                 BlendOp: AC_SRC_OVER as u8,
@@ -333,17 +384,21 @@ impl Gfx {
                 SourceConstantAlpha: 255,
                 AlphaFormat: AC_SRC_ALPHA as u8,
             };
-            let _ = UpdateLayeredWindow(
-                hwnd,
-                HDC::default(),
-                Some(&POINT { x, y }),
-                Some(&SIZE { cx: w, cy: h }),
-                self.memdc,
-                Some(&POINT { x: 0, y: 0 }),
-                COLORREF(0),
-                Some(&blend),
-                ULW_ALPHA,
-            );
+            let (dst, size, src) = (POINT { x, y }, SIZE { cx: w, cy: h }, POINT { x: 0, y: 0 });
+            let info = UPDATELAYEREDWINDOWINFO {
+                cbSize: std::mem::size_of::<UPDATELAYEREDWINDOWINFO>() as u32,
+                hdcDst: HDC::default(),
+                pptDst: &dst,
+                psize: &size,
+                hdcSrc: self.memdc,
+                pptSrc: &src,
+                crKey: COLORREF(0),
+                pblend: &blend,
+                dwFlags: ULW_ALPHA,
+                // only this part is read from the buffer (which holds other islands elsewhere)
+                prcDirty: part.as_ref().map_or(std::ptr::null(), |r| r as *const RECT),
+            };
+            let _ = UpdateLayeredWindowIndirect(hwnd, &info);
         }
     }
 
@@ -682,16 +737,33 @@ impl Gfx {
         self.pop();
     }
 
-    /// Part `src` (bitmap pixels) of a pixel-art bitmap, scaled with hard pixel edges.
-    pub fn sprite(&self, b: &ID2D1Bitmap, src: R, dst: R, opacity: f32) {
+    /// Pixel art (premultiplied BGRA) ready to draw with `pixel_art`.
+    pub fn pixmap(&self, w: u32, h: u32, px: Vec<u8>) -> Option<Pixmap> {
+        let base = self.create_bitmap(w, h, &px)?;
+        Some(Pixmap { w, h, px, base, big: RefCell::new(Vec::new()) })
+    }
+
+    /// Part `src` (pixmap pixels) of pixel art into `dst`, every art pixel the same size.
+    /// When an art pixel covers a whole number of screen pixels it is drawn with hard edges;
+    /// otherwise from a copy enlarged to the next whole multiple and smoothed down to size,
+    /// so the pixels stay even (only their borders blend a little) at 125 %, 150 %, ...
+    pub fn pixel_art(&self, p: &Pixmap, src: R, dst: R, opacity: f32) {
+        let f = dst.w * self.scale / src.w.max(1.0);
+        let whole = f.round();
+        let (b, k, mode) = if whole >= 1.0 && (f - whole).abs() < 0.02 {
+            (p.base.clone(), 1.0, D2D1_BITMAP_INTERPOLATION_MODE_NEAREST_NEIGHBOR)
+        } else if f < 1.0 {
+            (p.base.clone(), 1.0, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR)
+        } else {
+            let k = (f.ceil() as u32).clamp(2, 4);
+            match p.enlarged(self, k) {
+                Some(b) => (b, k as f32, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR),
+                None => (p.base.clone(), 1.0, D2D1_BITMAP_INTERPOLATION_MODE_NEAREST_NEIGHBOR),
+            }
+        };
+        let src = R::new(src.x * k, src.y * k, src.w * k, src.h * k);
         unsafe {
-            self.rt.DrawBitmap(
-                b,
-                Some(&dst.d2d()),
-                opacity,
-                D2D1_BITMAP_INTERPOLATION_MODE_NEAREST_NEIGHBOR,
-                Some(&src.d2d()),
-            );
+            self.rt.DrawBitmap(&b, Some(&dst.d2d()), opacity, mode, Some(&src.d2d()));
         }
     }
 
