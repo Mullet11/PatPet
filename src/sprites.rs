@@ -23,7 +23,7 @@ pub struct Strip {
     pub px: Vec<u8>,
 }
 
-const CATS: [(Mood, &[u8]); 19] = [
+const CATS: [(Mood, &[u8]); 20] = [
     (Mood::Idle, include_bytes!("../assets/pet/cat_idle.png")),
     (Mood::Music, include_bytes!("../assets/pet/cat_music.png")),
     (Mood::Sleep, include_bytes!("../assets/pet/cat_sleep.png")),
@@ -43,6 +43,7 @@ const CATS: [(Mood, &[u8]); 19] = [
     (Mood::Groom, include_bytes!("../assets/pet/cat_groom.png")),
     (Mood::TailWag, include_bytes!("../assets/pet/cat_tailwag.png")),
     (Mood::LevelUp, include_bytes!("../assets/pet/cat_levelup.png")),
+    (Mood::Focus, include_bytes!("../assets/pet/cat_focus.png")),
 ];
 
 const PROPS: &[u8] = include_bytes!("../assets/pet/props.png");

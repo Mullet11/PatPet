@@ -5,6 +5,8 @@ mod breaks;
 mod care;
 mod clip;
 mod events;
+mod focus;
+mod package;
 mod gfx;
 mod install;
 mod lyrics;
@@ -60,10 +62,18 @@ fn main() {
             return;
         }
 
-        // Started by the updater: the old copy is still closing, so wait for it to let go.
+        // Settings > Apps > Installed apps > Uninstall
+        if args.len() >= 2 && args[1] == "--uninstall" {
+            install::uninstall();
+            return;
+        }
+
+        // Started by the updater, or by the downloaded exe that just installed this copy: the
+        // other copy is still closing, so wait for it to let go.
         let after_update = args.len() >= 2 && args[1] == "--after-update";
+        let installed = args.len() >= 2 && args[1] == "--installed";
         let mut _mutex = CreateMutexW(None, BOOL::from(true), w!("Local\\PatPet.SingleInstance"));
-        if after_update {
+        if after_update || installed {
             for _ in 0..50 {
                 if GetLastError() != ERROR_ALREADY_EXISTS {
                     break;
@@ -88,6 +98,10 @@ fn main() {
             return;
         }
         update::cleanup();
+        // opened from Downloads (or anywhere else): install, start the installed copy, quit
+        if install::install_and_relaunch() {
+            return;
+        }
 
         let hinst: HINSTANCE = GetModuleHandleW(None).unwrap_or_default().into();
         let wc = WNDCLASSW {
@@ -128,6 +142,8 @@ fn main() {
                 app.start();
                 if after_update {
                     app.updated();
+                } else if installed {
+                    app.installed();
                 }
             }
         });

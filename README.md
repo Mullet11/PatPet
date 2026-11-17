@@ -62,6 +62,14 @@ the cat is never sad about it. Being away for 5 minutes on your own counts as a 
 start again, without a notice). It waits while a full-screen app is in front. Turn it off with
 **Break reminders from the cat** in the right-click menu.
 
+### Focus
+
+Below the care cards, pick 15, 25, 45 or 60 minutes and press **Start**. The cat puts on its glasses and
+focuses with you; the closed island counts down. Break reminders wait until the session is over. When the
+time is up you get 1 experience for every 5 minutes (up to 12 a day) and a 5-minute break is offered.
+**Stop** ends a session early, and the minutes already done still count. A session keeps running if PatPet
+is closed in between.
+
 ### Levels and rooms
 
 Feeding (+5), playing (+8), a bath (+5), petting (+1), a break (+6, up to 8 a day) and every task you tick off (+10, the first time only, up to 5 tasks a day) give experience;
@@ -105,6 +113,19 @@ in or out adds or removes its island.
 On the first run after installing, **Start with Windows** and **Add screenshots to Shelf** are on.
 Both can be switched off in the menu, and stay off after that.
 
+## Install
+
+Download `patpet.exe` from the [latest release](https://github.com/Mullet11/PatPet/releases/latest) and open it.
+That's all: PatPet copies itself to `%LOCALAPPDATA%\Programs\PatPet`, starts from there and says
+"PatPet is installed". From then on it starts with Windows, it is in the Start menu, and it is listed in
+**Settings > Apps > Installed apps**. The downloaded file can be deleted. No admin rights are needed.
+
+The exe is not signed, so the first time Windows may say "Windows protected your PC": click **More info**,
+then **Run anyway**. (The Microsoft Store version, once published, installs without that warning.)
+
+**Uninstall:** Settings > Apps > Installed apps > PatPet > Uninstall. It asks whether to keep your tasks,
+cat and settings, then removes PatPet from Windows startup, the Start menu and its folder.
+
 ## Usage
 
 * Click the pill to expand it (buttons react when the mouse button is released, so holding it down does nothing).
@@ -112,13 +133,13 @@ Both can be switched off in the menu, and stay off after that.
   the island never close it. It stays open while you type in a field or hold the mouse button.
 * A task or clipboard entry too long for its row ends in "…"; hold the mouse over it and the text slides to show the rest.
 * Right-click the island or the tray icon for **Hide / Show PatPet**, **Shrink to a line until hovered**,
-  **Add screenshots to Shelf**, **Start with Windows** and **Quit**.
+  **Add screenshots to Shelf**, **Break reminders from the cat**, **Start with Windows** and **Quit**.
   Left-click the tray icon to bring a hidden island back.
 * **Shrink to a line until hovered** (off by default): the closed island becomes a thin line at the top of the
   screen. Move the mouse onto the line, or within about 1 cm of it, and the normal pill comes back.
   Notices still show as usual.
-* PatPet adds itself to the Start menu on first run, so you can launch it from Windows Search.
-  Launching it again while it runs (or is hidden) just opens the island.
+* Launch it from the Start menu or Windows Search. Launching it again while it runs (or is hidden) just
+  opens the island.
 * Data is stored in `%APPDATA%\PatPet\data.json`.
 
 ## Updates
@@ -132,6 +153,24 @@ the notice opens the download page instead.
 
 Publishing a release: bump `version` in `Cargo.toml`, build, and create a GitHub release tagged `v<version>`
 (e.g. `v1.5.0`) with the built `patpet.exe` attached under exactly that name.
+
+The Microsoft Store version is updated by the Store instead: it has no update notice or menu item.
+
+## Microsoft Store package
+
+`packaging/` holds the MSIX manifest and tile icons. The Store signs the package, so Store users get no
+"Windows protected your PC" warning. In the Store version PatPet does not install or update itself, and it
+starts with Windows through the package's startup task (on after the app has been opened once; the
+**Start with Windows** menu item switches it).
+
+1. Register for free as an individual developer at storedeveloper.microsoft.com and reserve the name PatPet.
+2. In `packaging/AppxManifest.xml`, replace the three `FROM-PARTNER-CENTER` values with the ones in
+   Partner Center > PatPet > Product identity, and set `Version` to the release (`3.2.0.0`).
+3. Build, put `target\release\patpet.exe` next to the manifest in a copy of `packaging/`, and pack it with
+   the Windows SDK: `makeappx pack /d <that folder> /p PatPet.msix`.
+4. Upload `PatPet.msix` in a new submission (no signing needed: the Store signs it).
+
+While developing, `cargo`'s own builds (`target\release`) never install themselves; they run where they are.
 
 ## UI colors
 
@@ -197,7 +236,7 @@ This runs `cargo build --release`; `build.rs` embeds `assets/app.ico` and the ma
 
 Or just double-click `rebuild.bat`: it closes the running PatPet, builds, and starts the new build.
 
-For screenshots and testing, `PATPET_DEMO=pet|petroom|breakdue|breaktimer|pethungry|petnap|petlevel|petpill|media|lyrics|shelf|tasks|tasksday|taskremind|clipboard|clipboardempty|tasksempty|toast|volume|shelfimg|cliphover|cliphoverfull|caps|capsoff|tws|charging|copied|idle|line`
+For screenshots and testing, `PATPET_DEMO=pet|petroom|breakdue|breaktimer|focus|focuspanel|focusdone|pethungry|petnap|petlevel|petpill|media|lyrics|shelf|tasks|tasksday|taskremind|clipboard|clipboardempty|tasksempty|toast|volume|shelfimg|cliphover|cliphoverfull|caps|capsoff|tws|charging|copied|idle|line`
 opens a specific view on start (`pet`: the happy cat with hearts; demo mode never saves data).
 With `PATPET_DUMP=out.bmp` as well, the settled frame is saved to that file and PatPet quits. `PATPET_DEMO=stress` keeps opening and closing the island
 to check for leaks (`PATPET_STRESS=fetch|toggle`, `PATPET_STRESS_MS`, `PATPET_STRESS_N`). `PATPET_MOUSE=x,y` pretends

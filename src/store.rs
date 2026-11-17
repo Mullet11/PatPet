@@ -51,6 +51,8 @@ impl Default for Settings {
 pub struct Data {
     /// the cat: its needs, level and room
     pub pet: crate::care::Care,
+    /// the focus session running (or the length picked for the next one)
+    pub focus: crate::focus::Focus,
     pub tasks: Vec<Task>,
     pub shelf: Vec<String>,
     pub next_id: u64,

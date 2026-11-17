@@ -1,0 +1,56 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  The Microsoft Store version of PatPet (MSIX). See "Microsoft Store package" in README.md.
+  Before packaging: replace the three values marked FROM-PARTNER-CENTER with the ones shown in
+  Partner Center > your app > Product identity, and set Version to the release (x.y.z.0).
+-->
+<Package
+  xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10"
+  xmlns:uap="http://schemas.microsoft.com/appx/manifest/uap/windows10"
+  xmlns:desktop="http://schemas.microsoft.com/appx/manifest/desktop/windows10"
+  xmlns:rescap="http://schemas.microsoft.com/appx/manifest/foundation/windows10/restrictedcapabilities"
+  IgnorableNamespaces="uap desktop rescap">
+
+  <Identity
+    Name="FROM-PARTNER-CENTER.PatPet"
+    Publisher="CN=FROM-PARTNER-CENTER"
+    Version="3.2.0.0"
+    ProcessorArchitecture="x64" />
+
+  <Properties>
+    <DisplayName>PatPet</DisplayName>
+    <PublisherDisplayName>FROM-PARTNER-CENTER</PublisherDisplayName>
+    <Logo>Assets\StoreLogo.png</Logo>
+  </Properties>
+
+  <Dependencies>
+    <TargetDeviceFamily Name="Windows.Desktop" MinVersion="10.0.17763.0" MaxVersionTested="10.0.26100.0" />
+  </Dependencies>
+
+  <Resources>
+    <Resource Language="en-us" />
+  </Resources>
+
+  <Applications>
+    <Application Id="PatPet" Executable="patpet.exe" EntryPoint="Windows.FullTrustApplication">
+      <uap:VisualElements
+        DisplayName="PatPet"
+        Description="A Dynamic Island for Windows with a pixel cat to look after"
+        BackgroundColor="transparent"
+        Square150x150Logo="Assets\Square150x150Logo.png"
+        Square44x44Logo="Assets\Square44x44Logo.png" />
+      <Extensions>
+        <!-- starts with Windows once the app has been opened (see src/package.rs) -->
+        <desktop:Extension Category="windows.startupTask" Executable="patpet.exe" EntryPoint="Windows.FullTrustApplication">
+          <desktop:StartupTask TaskId="PatPetStartup" Enabled="true" DisplayName="PatPet" />
+        </desktop:Extension>
+      </Extensions>
+    </Application>
+  </Applications>
+
+  <Capabilities>
+    <!-- song lyrics are looked up online -->
+    <Capability Name="internetClient" />
+    <rescap:Capability Name="runFullTrust" />
+  </Capabilities>
+</Package>

@@ -38,6 +38,8 @@ const GREEN: C = C::hex(0x4CD787);
 const MEDIA_C: C = C::hex(0xF2F2F7);
 const CLIP_C: C = C::hex(0x5AC8FA);
 const HEART_C: C = C::hex(0xFF7AA2);
+/// Focus sessions.
+const FOCUS_C: C = C::hex(0x7AA8FF);
 
 // ------------------------------------------------------------------ the cat
 
@@ -72,6 +74,7 @@ const WALK_SPEED: f32 = 0.07;
 const NEED_NOTICE_EVERY: i64 = 3 * 3600;
 /// What the closed island says during a break.
 const BREAK_LABEL: &str = "Break";
+const FOCUS_LABEL: &str = "Focus";
 /// Heart glyph (Segoe Fluent Icons / MDL2: HeartFill).
 const HEART: char = '\u{EB52}';
 
@@ -159,6 +162,8 @@ enum Live {
     Task,
     /// a break with the cat: the time left
     Break,
+    /// a focus session: the time left
+    Focus,
 }
 
 // compact-island metrics (DIP)
@@ -292,6 +297,10 @@ enum Act {
     Pet,
     /// one of the care cards in the Pet tab (feed, play, sleep, bath)
     Care(Need),
+    /// focus sessions: pick a length (minutes), start, stop
+    FocusLen(u32),
+    FocusStart,
+    FocusStop,
     /// show the previous / next open room
     Room(i32),
 }
@@ -536,6 +545,8 @@ pub struct App {
     pet: Pet,
     /// break reminders (see breaks.rs)
     breaks: crate::breaks::Breaks,
+    /// seconds left on the countdown shown last (break or focus)
+    last_count: Option<i64>,
     cat_strips: Vec<Option<crate::sprites::Strip>>,
     cat_bmps: Vec<Option<crate::gfx::Pixmap>>,
     props_bmp: Option<crate::gfx::Pixmap>,
@@ -706,6 +717,10 @@ impl App {
             tray::set_autostart(true);
             data.settings.screenshots = true;
             store::save(&data);
+        } else if tray::autostart_enabled() && !crate::package::is_packaged() {
+            // keep starting with Windows from wherever PatPet now lives (e.g. moved from
+            // Downloads into its install folder)
+            tray::set_autostart(true);
         }
         let media_tx = crate::media::spawn();
         let audio = system::Audio::new();
@@ -798,6 +813,7 @@ impl App {
             upd_shown: None,
             pet: Pet::new(CAT_SLEEP_AFTER),
             breaks: Default::default(),
+            last_count: None,
             cat_strips: crate::sprites::cats(),
             cat_bmps: Vec::new(),
             props_bmp: None,
@@ -1005,6 +1021,16 @@ impl App {
                 self.expand(Some(Tab::Pet));
             }
             "breakdue" => self.ask_break(),
+            "focus" | "focuspanel" => {
+                // 6 min 23 s into a 25-minute session
+                self.data.focus = crate::focus::Focus { length: 25, ..Default::default() };
+                self.data.focus.start(unix_now() - 383);
+                self.pet.set_focusing(true, Instant::now());
+                if v == "focuspanel" {
+                    self.expand(Some(Tab::Pet));
+                }
+            }
+            "focusdone" => self.focus_over(5, true),
             "breaktimer" => {
                 // a break just started
                 self.breaks.start(self.mono_secs());
@@ -1251,7 +1277,7 @@ impl App {
         if self.expanded && self.s.hwnd == self.home {
             let lyr = self.tab == Tab::Media && self.lyrics_open && self.media.is_some();
             let (w, h) = match self.tab {
-                Tab::Pet => (500.0, 264.0),
+                Tab::Pet => (500.0, 306.0),
                 Tab::Media if lyr => (760.0, 214.0),
                 Tab::Media => (500.0, 190.0),
                 Tab::Shelf => (500.0, 196.0),
@@ -1290,6 +1316,9 @@ impl App {
         let mut v = Vec::with_capacity(3);
         if self.breaks.resting() {
             v.push(Live::Break);
+        }
+        if self.data.focus.running() {
+            v.push(Live::Focus);
         }
         if self.media.is_some() {
             v.push(Live::Media);
@@ -1343,6 +1372,7 @@ impl App {
             }
             // "Break" | 4:59 — must mirror draw_compact
             Live::Break => 10.0 + g.measure(BREAK_LABEL, 12.5, 600) + 12.0 + g.measure_clock("8:88", CLOCK_SIZE, 600) + 14.0,
+            Live::Focus => 10.0 + g.measure(FOCUS_LABEL, 12.5, 600) + 12.0 + g.measure_clock("88:88", CLOCK_SIZE, 600) + 14.0,
         }
     }
 
@@ -1869,11 +1899,19 @@ impl App {
             }
             Live::Break => {
                 let left = self.breaks.rest_left(self.mono_secs()).unwrap_or(0);
-                let t = format!("{}:{:02}", left / 60, left % 60);
+                let t = mmss(left as f64);
                 g.text(BREAK_LABEL, R::new(c.x + 10.0, c.y, c.w, c.h), 12.5, 600, HEART_C, Al::L);
                 g.clock(&t, R::new(c.x, c.y, c.w - 14.0, c.h), CLOCK_SIZE, 600, WHITE, Al::R);
                 let done = 1.0 - left as f32 / crate::breaks::REST_SECS as f32;
                 self.bottom_progress(g, full, done, HEART_C.a(0.85));
+            }
+            Live::Focus => {
+                let f = &self.data.focus;
+                let left = f.left(unix_now()).unwrap_or(0);
+                g.text(FOCUS_LABEL, R::new(c.x + 10.0, c.y, c.w, c.h), 12.5, 600, FOCUS_C, Al::L);
+                g.clock(&mmss(left as f64), R::new(c.x, c.y, c.w - 14.0, c.h), CLOCK_SIZE, 600, WHITE, Al::R);
+                let total = (f.until.unwrap_or(0) - f.started).max(1);
+                self.bottom_progress(g, full, 1.0 - left as f32 / total as f32, FOCUS_C.a(0.85));
             }
         }
     }
@@ -2918,6 +2956,20 @@ impl App {
             }
             Act::Pet => self.pet_cat(),
             Act::Care(need) => self.care_for(need),
+            Act::FocusLen(m) => {
+                self.data.focus.length = m;
+                self.dirty = true;
+            }
+            Act::FocusStart => {
+                self.data.focus.start(unix_now());
+                self.pet.set_focusing(true, Instant::now());
+                dbg_log(&format!("focus: {} min", self.data.focus.minutes()));
+                self.dirty = true;
+            }
+            Act::FocusStop => {
+                let xp = self.data.focus.stop(unix_now(), now().day());
+                self.focus_over(xp, false);
+            }
             Act::Room(step) => {
                 self.data.pet.next_room(step);
                 self.dirty = true;
@@ -3191,7 +3243,12 @@ impl App {
             self.last_min = minute;
             redraw = true;
         }
-        let periodic = (compact && (playing || self.task_soon().is_some() || self.breaks.resting()))
+        let count = self.countdown();
+        if count.is_some() && count != self.last_count && (compact || (self.expanded && self.tab == Tab::Pet)) {
+            redraw = true;
+        }
+        self.last_count = count;
+        let periodic = (compact && (playing || self.task_soon().is_some()))
             || (self.expanded
                 && match self.tab {
                     Tab::Media => playing,
@@ -3241,6 +3298,7 @@ impl App {
         // the cat's needs run down; a gentle notice when one is running low
         self.sync_care();
         self.need_notice();
+        self.focus_tick();
         self.break_tick();
 
         // task reminders: 1 day, 6 h, 3 h, 1 h and 30 min before, and when due. Not while
@@ -3250,7 +3308,7 @@ impl App {
         }
 
         // updates: a quiet check now and then, the offer once nothing is in the way
-        if !self.demo && !self.upd_busy && Instant::now() >= self.upd_next && std::env::var_os("PATPET_NO_UPDATE").is_none() {
+        if !self.demo && !crate::package::is_packaged() && !self.upd_busy && Instant::now() >= self.upd_next && std::env::var_os("PATPET_NO_UPDATE").is_none() {
             self.upd_next = Instant::now() + Duration::from_secs(6 * 3600);
             self.upd_busy = true;
             update::check(false);
@@ -3858,6 +3916,7 @@ impl App {
             screenshots: self.data.settings.screenshots,
             breaks: self.data.settings.breaks,
             update: self.upd_avail.as_ref().map(|r| r.version.clone()),
+            store: crate::package::is_packaged(),
             update_busy: self.upd_busy,
         }
     }
@@ -3994,6 +4053,12 @@ impl App {
     }
 
     /// Started by the updater (`--after-update`).
+    /// Started by the downloaded exe right after it installed this copy (`--installed`).
+    pub fn installed(&mut self) {
+        self.cheer();
+        self.notice(TIcon::Prop(prop::STAR), "PatPet is installed", "It starts with Windows - find it in the Start menu", 8.0, HEART_C, Tap::None);
+    }
+
     pub fn updated(&mut self) {
         self.notice(TIcon::G(ic::CHECK), "PatPet updated", &format!("You're on version {}", update::CURRENT), 5.0, GREEN, Tap::None);
     }
@@ -4238,7 +4303,46 @@ impl App {
         self.kick();
     }
 
-    /// The cat went up `ups` levels: it celebrates, and a notice says what opened up.
+    /// Seconds left on the countdown in the closed island (a break, or else a focus session).
+    fn countdown(&self) -> Option<i64> {
+        self.breaks.rest_left(self.mono_secs()).map(|s| s as i64).or_else(|| self.data.focus.left(unix_now()))
+    }
+
+    /// A focus session that ran out (also while PatPet was closed) is rewarded.
+    fn focus_tick(&mut self) {
+        let running = self.data.focus.running();
+        self.pet.set_focusing(running, Instant::now());
+        if let Some(xp) = self.data.focus.tick(unix_now(), now().day()) {
+            self.focus_over(xp, true);
+        }
+    }
+
+    /// A focus session ended (`finished`: it ran its whole length): experience for the cat,
+    /// and a break is offered. Stopping early costs nothing.
+    fn focus_over(&mut self, xp: u32, finished: bool) {
+        dbg_log(&format!("focus: over (finished: {finished}, +{xp} xp)"));
+        self.dirty = true;
+        self.pet.set_focusing(false, Instant::now());
+        let ups = self.data.pet.gain(xp);
+        let earned = if xp > 0 { format!(" · +{xp} XP") } else { String::new() };
+        if finished {
+            self.cheer();
+            if self.data.settings.breaks {
+                self.breaks = Default::default();
+                let sub = format!("Tap for a 5-minute break{earned}");
+                self.notice(TIcon::Prop(prop::STAR), "Focus session done!", &sub, crate::breaks::ASK_SECS as f32, FOCUS_C, Tap::Break);
+            } else {
+                let sub = format!("Your cat stayed with you all the way{earned}");
+                self.notice(TIcon::Prop(prop::STAR), "Focus session done!", &sub, 6.0, FOCUS_C, Tap::None);
+            }
+        } else {
+            let sub = if xp > 0 { format!("The minutes you did still count{earned}") } else { "No worries, try again any time".to_string() };
+            self.notice(TIcon::Prop(prop::STAR), "Focus stopped", &sub, 5.0, FOCUS_C, Tap::None);
+        }
+        self.on_levels(ups);
+        self.kick();
+    }
+
     /// Seconds on a steady clock (since PatPet started), for the break timer.
     fn mono_secs(&self) -> u64 {
         self.t0.elapsed().as_secs()
@@ -4252,7 +4356,7 @@ impl App {
         let now_s = self.mono_secs();
         let idle = system::user_idle().as_secs();
         // not over a full-screen app, and not on top of another notice
-        let busy = self.all_hidden() || self.toast.is_some() || self.leaving.is_some();
+        let busy = self.all_hidden() || self.toast.is_some() || self.leaving.is_some() || self.data.focus.running();
         let after = u64::from(self.data.settings.break_after_min.max(5)) * 60;
         match self.breaks.tick(now_s, idle, busy, after) {
             Some(crate::breaks::Event::Due) => self.ask_break(),
@@ -4290,6 +4394,7 @@ impl App {
         self.kick();
     }
 
+    /// The cat went up `ups` levels: it celebrates, and a notice says what opened up.
     fn on_levels(&mut self, ups: u32) {
         if ups == 0 {
             return;
@@ -4407,6 +4512,31 @@ impl App {
             g.rrect(bar, 3.0, WHITE.a(0.12));
             let col = if v < care::LOW { RED } else { col };
             g.rrect(R::new(bar.x, bar.y, (bar.w * v / 100.0).max(6.0), bar.h), 3.0, col);
+        }
+
+        // focus with the cat, under the cards
+        let fr = R::new(c.x, y + 46.0 + 8.0, c.w, 34.0);
+        g.rrect(fr, 12.0, surf(g, false));
+        g.text(FOCUS_LABEL, R::new(fr.x + 14.0, fr.y, 60.0, fr.h), 12.5, 600, FOCUS_C, Al::L);
+        let btn = R::new(fr.right() - 78.0, fr.y + 5.0, 70.0, 24.0);
+        let f = &self.data.focus;
+        if let Some(left) = f.left(unix_now()) {
+            g.text("Your cat is focusing with you", R::new(fr.x + 70.0, fr.y, 220.0, fr.h), 12.0, 500, T2, Al::L);
+            g.clock(&mmss(left as f64), R::new(fr.x, fr.y, btn.x - 12.0 - fr.x, fr.h), 14.0, 600, WHITE, Al::R);
+            let hv = ui.hit(btn, Act::FocusStop);
+            g.rrect(btn, 12.0, surf(g, hv));
+            g.text("Stop", btn, 12.0, 600, WHITE, Al::C);
+        } else {
+            for (k, m) in crate::focus::LENGTHS.into_iter().enumerate() {
+                let chip = R::new(fr.x + 70.0 + k as f32 * 56.0, fr.y + 5.0, 50.0, 24.0);
+                let hv = ui.hit(chip, Act::FocusLen(m));
+                let on = m == f.minutes();
+                g.rrect(chip, 12.0, if on { FOCUS_C.a(0.28) } else { surf(g, hv) });
+                g.text(&format!("{m} min"), chip, 11.5, if on { 700 } else { 500 }, if on { WHITE } else { T2 }, Al::C);
+            }
+            let hv = ui.hit(btn, Act::FocusStart);
+            g.rrect(btn, 12.0, if hv { FOCUS_C } else { FOCUS_C.a(0.85) });
+            g.text("Start", btn, 12.0, 700, C(0.04, 0.05, 0.10, 1.0), Al::C);
         }
     }
 

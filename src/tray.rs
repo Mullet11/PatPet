@@ -26,6 +26,8 @@ pub struct MenuState {
     /// a newer version that can be installed, or what the update item says while busy
     pub update: Option<String>,
     pub update_busy: bool,
+    /// the Store version: the Store updates it
+    pub store: bool,
 }
 
 fn nid(hwnd: HWND) -> NOTIFYICONDATAW {
@@ -70,6 +72,7 @@ pub fn menu(hwnd: HWND, st: &MenuState) -> u32 {
         let _ = AppendMenuW(m, check(st.autostart), CMD_AUTOSTART as usize, w!("Start with Windows"));
         let _ = AppendMenuW(m, MF_STRING, CMD_THEME as usize, w!("UI colors (theme.conf)..."));
         let _ = AppendMenuW(m, MF_SEPARATOR, 0, PCWSTR::null());
+        if !st.store {
         let upd = match (&st.update, st.update_busy) {
             (_, true) => "Updating PatPet...".to_string(),
             (Some(v), false) => format!("Update to v{v}"),
@@ -78,6 +81,7 @@ pub fn menu(hwnd: HWND, st: &MenuState) -> u32 {
         let upd_w = wide(&upd);
         let flags = if st.update_busy { MF_STRING | MF_GRAYED } else { MF_STRING };
         let _ = AppendMenuW(m, flags, CMD_UPDATE as usize, PCWSTR(upd_w.as_ptr()));
+        }
         let _ = AppendMenuW(m, MF_STRING, CMD_QUIT as usize, w!("Quit PatPet"));
         let mut p = POINT::default();
         let _ = GetCursorPos(&mut p);
@@ -99,10 +103,17 @@ pub fn edit_file(path: &std::path::Path) {
 const RUN: PCWSTR = w!("Software\\Microsoft\\Windows\\CurrentVersion\\Run");
 
 pub fn autostart_enabled() -> bool {
+    if crate::package::is_packaged() {
+        return crate::package::startup_enabled();
+    }
     unsafe { RegGetValueW(HKEY_CURRENT_USER, RUN, w!("PatPet"), RRF_RT_REG_SZ, None, None, None).is_ok() }
 }
 
 pub fn set_autostart(on: bool) {
+    if crate::package::is_packaged() {
+        crate::package::set_startup(on);
+        return;
+    }
     unsafe {
         if on {
             let Ok(exe) = std::env::current_exe() else { return };

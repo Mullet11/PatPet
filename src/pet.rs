@@ -32,6 +32,8 @@ pub enum Mood {
     Groom,
     TailWag,
     LevelUp,
+    /// keeping the user company during a focus session
+    Focus,
 }
 
 /// Something done to the cat that it acts out.
@@ -75,6 +77,7 @@ impl Mood {
             Mood::Groom => (8, 8.0, true),
             Mood::TailWag => (6, 6.0, true),
             Mood::LevelUp => (8, 8.0, false),
+            Mood::Focus => (6, 4.0, true),
         }
     }
 
@@ -92,6 +95,7 @@ pub struct Pet {
     playing: bool,
     napping: bool,
     resting: bool,
+    focusing: bool,
     walking: bool,
     need: Option<Need>,
     idle: Duration,
@@ -116,6 +120,7 @@ impl Pet {
             playing: false,
             napping: false,
             resting: false,
+            focusing: false,
             walking: false,
             need: None,
             idle: Duration::ZERO,
@@ -183,6 +188,12 @@ impl Pet {
     /// The user is on a break: the cat curls up and rests with them.
     pub fn set_resting(&mut self, resting: bool, now: Instant) -> bool {
         self.resting = resting;
+        self.update(now, false)
+    }
+
+    /// A focus session is running: the cat concentrates alongside.
+    pub fn set_focusing(&mut self, focusing: bool, now: Instant) -> bool {
+        self.focusing = focusing;
         self.update(now, false)
     }
 
@@ -293,6 +304,8 @@ impl Pet {
     fn base(&self) -> Mood {
         if self.napping || self.resting {
             Mood::Sleep
+        } else if self.focusing {
+            Mood::Focus
         } else if self.playing {
             Mood::Music
         } else if self.idle >= self.sleep_after {
