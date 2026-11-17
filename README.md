@@ -3,9 +3,12 @@
 A lightweight Dynamic Island for Windows with a pixel-art cat living in it, written in Rust
 (pure Win32 + Direct2D, no webview). Based on [Veyra](https://github.com/AhmadUlyani/Veyra);
 the earlier Slint version of PatPet is kept under the git tag `v2-slint`.
-Uses a few MB of memory and ~0.1% CPU while idle (buffers and idle pages are handed back to
-Windows a few seconds after the island returns to its small shape). Animations are paced to the
+Uses about 12 MB of memory and around 1% of one CPU core while the cat animates in the closed
+island (only the cat's square is redrawn; buffers and idle pages are handed back to Windows a
+few seconds after the island returns to its small shape). Animations are paced to the
 display's refresh rate (60/120/144/165 Hz…) by waiting for vertical blank. The single `.exe` is under 1 MB.
+
+![PatPet's cat: always in the island, its own room, four needs, bedtime and levels](docs/cat-feature.png)
 
 ## Features
 

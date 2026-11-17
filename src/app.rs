@@ -974,14 +974,19 @@ impl App {
             }
             "pet" => self.cheer(),
             "petroom" | "pethungry" | "petnap" | "petlevel" => {
+                // a well kept cat (not whatever data.json holds), then what the view shows
                 let c = &mut self.data.pet;
+                *c = crate::care::Care { food: 80.0, fun: 70.0, energy: 85.0, clean: 75.0, ..Default::default() };
                 c.updated = unix_now();
                 c.level = 6;
                 c.xp = 70;
                 c.room = 2;
                 match v {
                     "pethungry" => c.food = 12.0,
-                    "petnap" => c.nap = true,
+                    "petnap" => {
+                        c.nap = true;
+                        c.energy = 40.0;
+                    }
                     _ => {}
                 }
                 self.sync_care();
@@ -991,8 +996,8 @@ impl App {
                 self.expand(Some(Tab::Pet));
             }
             "petpill" => {
+                self.data.pet = crate::care::Care { food: 80.0, fun: 70.0, energy: 85.0, clean: 10.0, ..Default::default() };
                 self.data.pet.updated = unix_now();
-                self.data.pet.clean = 10.0;
                 self.sync_care();
             }
             "toast" => self.toast(TIcon::G(ic::FOLDER), "Screenshot added to Shelf", "Drag it anywhere from the Shelf", 600.0, SHELF_C, Some(Tab::Shelf)),
@@ -3169,7 +3174,9 @@ impl App {
         let fast = (compact && playing) || (self.expanded && self.tab == Tab::Media && self.lyrics_open && playing);
         // the cat: what it is up to, and a redraw whenever its animation moves on a frame
         self.pet.set_music(playing, n);
-        self.pet.tick(n, system::user_idle(), now().h as u32);
+        // (demo views show the cat awake, however long the mouse has been still)
+        let idle = if self.demo { Duration::ZERO } else { system::user_idle() };
+        self.pet.tick(n, idle, now().h as u32);
         self.wander(n);
         let cat_shown = self.cat_visible();
         let others = redraw || periodic;
@@ -4159,7 +4166,7 @@ impl App {
 
     /// Bring the needs up to date and tell the cat how it is doing.
     fn sync_care(&mut self) {
-        let asleep = system::user_idle() >= CAT_SLEEP_AFTER;
+        let asleep = !self.demo && system::user_idle() >= CAT_SLEEP_AFTER;
         self.data.pet.advance(unix_now(), asleep);
         let c = &self.data.pet;
         self.pet.set_care(c.nap, c.lowest(), Instant::now());
